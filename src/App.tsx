@@ -1733,7 +1733,7 @@ function App() {
                 <button type="button" className="secondary-button" onClick={() => setComposerOpen(false)}>
                   Cancel
                 </button>
-                <button type="submit" className="primary-button">
+                <button type="submit" className="primary-button" disabled={!draft.content.trim()}>
                   {editingPostId ? 'Save changes' : 'Publish article'}
                 </button>
               </div>
