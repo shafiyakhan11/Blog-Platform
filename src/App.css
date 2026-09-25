@@ -234,14 +234,27 @@ button:hover {
 
 .auth-form { display: grid; gap: 16px; margin-top: 25px; }
 .auth-form > label { display: grid; gap: 7px; color: #34445f; font-size: 0.78rem; font-weight: 700; }
+.password-field { display: grid; gap: 7px; color: #34445f; font-size: 0.78rem; font-weight: 700; }
+.password-input-wrap { position: relative; }
+.password-input-wrap input { width: 100%; border: 1px solid #dfe3e9; border-radius: 10px; padding: 0.82rem 3.2rem 0.82rem 0.9rem; outline: none; background: #fbfcfd; color: #18253d; font-size: 0.88rem; transition: border-color 0.2s, box-shadow 0.2s; }
 .auth-form input:not([type='checkbox']) { width: 100%; border: 1px solid #dfe3e9; border-radius: 10px; padding: 0.82rem 0.9rem; outline: none; background: #fbfcfd; color: #18253d; font-size: 0.88rem; transition: border-color 0.2s, box-shadow 0.2s; }
 .auth-form input:not([type='checkbox']):focus { border-color: #7090e4; box-shadow: 0 0 0 3px rgba(36, 83, 212, 0.1); }
+.password-toggle { position: absolute; top: 50%; right: 10px; transform: translateY(-50%); border: 0; background: transparent; color: #2453d4; font-size: 0.72rem; font-weight: 700; cursor: pointer; padding: 4px 8px; border-radius: 999px; }
+.password-toggle:hover {
+  transform: translateY(-50%);
+  background: rgba(36, 83, 212, 0.08);
+}
+.password-strength { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: -2px; color: #7a8799; font-size: 0.7rem; }
+.password-strength strong { font-size: 0.72rem; }
+.password-strength .weak { color: #d97706; }
+.password-strength .good { color: #f59e0b; }
+.password-strength .strong { color: #16a34a; }
 .auth-form-meta { justify-content: space-between; gap: 10px; margin-top: -2px; }
 .check-label { display: flex; align-items: center; gap: 7px; color: #7a8799; font-size: 0.74rem; }
 .check-label input { accent-color: #2453d4; }
 .auth-link { border: 0; padding: 0; background: transparent; color: #2453d4; font-size: 0.74rem; font-weight: 700; }
 .auth-error { margin: -2px 0 0; color: #b54747; font-size: 0.76rem; }
-.auth-submit { display: flex; align-items: center; justify-content: space-between; border: 0; border-radius: 10px; margin-top: 3px; padding: 0.9rem 1rem; background: #1947d1; color: #ffffff; font-weight: 800; box-shadow: 0 10px 20px rgba(25, 71, 209, 0.2); }
+.auth-submit { display: flex; align-items: center; justify-content: center; gap: 10px; border: 0; border-radius: 10px; margin-top: 3px; padding: 0.9rem 1rem; background: #1947d1; color: #ffffff; font-weight: 800; box-shadow: 0 10px 20px rgba(25, 71, 209, 0.2); }
 .auth-submit span { font-size: 1.2rem; }
 .auth-divider { gap: 12px; margin: 25px 0 16px; color: #a0aab7; font-size: 0.72rem; }
 .auth-divider::before, .auth-divider::after { content: ''; height: 1px; flex: 1; background: #e7e9ed; }
@@ -380,7 +393,7 @@ button:hover {
 
 .layout-grid {
   display: grid;
-  grid-template-columns: 290px minmax(0, 1fr) 300px;
+  grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1.8fr) minmax(240px, 0.9fr);
   gap: 22px;
   margin-top: 28px;
 }
@@ -389,6 +402,12 @@ button:hover {
 .content-column,
 .article-detail {
   min-width: 0;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
 }
 
 .panel-card,
@@ -488,6 +507,11 @@ button:hover {
   gap: 8px;
 }
 
+.topics-toggle {
+  display: block;
+  margin-top: 14px;
+}
+
 .tag {
   border: 1px solid rgba(148, 163, 184, 0.2);
   background: rgba(148, 163, 184, 0.05);
@@ -560,7 +584,8 @@ button:hover {
   display: grid;
   grid-template-columns: repeat(3, minmax(90px, 1fr));
   gap: 12px;
-  min-width: 260px;
+  width: min(100%, 300px);
+  min-width: 240px;
 }
 
 .featured-metrics > div {
@@ -958,6 +983,11 @@ button:hover {
 }
 
 @media (max-width: 1080px) {
+  .auth-layout {
+    grid-template-columns: minmax(0, 1fr) 380px;
+    gap: 36px;
+  }
+
   .layout-grid {
     grid-template-columns: 1fr;
   }
@@ -974,6 +1004,44 @@ button:hover {
 }
 
 @media (max-width: 700px) {
+  .app-shell {
+    width: calc(100vw - 20px);
+    margin: 16px auto;
+  }
+
+  .auth-page {
+    min-height: 100svh;
+    padding: 24px 14px;
+  }
+
+  .auth-layout {
+    display: block;
+    width: 100%;
+  }
+
+  .auth-intro {
+    min-height: auto;
+    gap: 28px;
+    padding: 0 0 28px;
+  }
+
+  .auth-intro h1 {
+    font-size: clamp(2.7rem, 14vw, 4rem);
+  }
+
+  .auth-intro-copy > p {
+    font-size: 0.96rem;
+  }
+
+  .auth-quote {
+    display: none;
+  }
+
+  .auth-card {
+    padding: 24px 18px;
+    border-radius: 18px;
+  }
+
   .topbar,
   .article-meta-row,
   .article-header-row,
@@ -996,12 +1064,107 @@ button:hover {
     padding: 18px;
   }
 
-  .app-shell {
-    width: min(100vw - 18px, 100%);
+  .brand-wrap {
+    width: 100%;
+  }
+
+  .topbar-actions {
+    gap: 8px;
+  }
+
+  .topbar-actions > button {
+    min-height: 44px;
+  }
+
+  .profile-trigger,
+  .topbar-actions .primary-button {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .featured-card,
+  .post-card,
+  .article-detail {
+    border-radius: 16px;
+  }
+
+  .featured-card {
+    padding: 18px;
+  }
+
+  .featured-copy h2 {
+    font-size: 1.65rem;
   }
 
   .featured-metrics {
-    grid-template-columns: repeat(3, minmax(80px, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .featured-metrics > div {
+    padding: 12px 6px;
+  }
+
+  .featured-metrics strong {
+    font-size: 1.05rem;
+  }
+
+  .post-card,
+  .article-detail {
+    padding: 18px;
+  }
+
+  .post-footer {
+    gap: 16px;
+  }
+
+  .stat-row,
+  .action-row,
+  .article-toolbar,
+  .article-actions,
+  .profile-page-actions,
+  .profile-edit-actions,
+  .form-actions {
+    width: 100%;
+  }
+
+  .action-row button,
+  .article-toolbar button,
+  .article-actions button,
+  .form-actions button {
+    flex: 1;
+    min-height: 44px;
+  }
+
+  .article-detail h2 {
+    font-size: 1.9rem;
+    overflow-wrap: anywhere;
+  }
+
+  .article-body {
+    overflow-wrap: anywhere;
+  }
+
+  .comment-item {
+    padding: 14px;
+  }
+
+  .comment-item > .comment-item {
+    margin-left: 0 !important;
+  }
+
+  .modal-backdrop {
+    padding: 10px;
+  }
+
+  .editor-modal {
+    max-height: calc(100svh - 20px);
+    padding: 18px;
+    border-radius: 16px;
+  }
+
+  .featured-metrics {
+    min-width: 0;
   }
 }
 

@@ -1,32 +1,28 @@
-# React + TypeScript + Vite
+# DraftFlow
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+DraftFlow is a React and TypeScript publishing workspace backed by a small Python HTTP API and PostgreSQL database.
 
-Currently, two official plugins are available:
+## Run locally
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Install the frontend dependencies, then use two terminals:
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```powershell
+npm install
+python -m pip install -r backend/requirements.txt
+python backend/server.py
+npm run dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Create a PostgreSQL database named `draftflow` before starting the API. The API runs at `http://127.0.0.1:8000`. The Vite app runs at the URL printed by `npm run dev` (normally `http://localhost:5173`). Tables are created automatically at API startup, and the existing sample posts are bootstrapped on the first frontend load.
+
+Set `DATABASE_URL` for PostgreSQL, using [backend/.env.example](backend/.env.example) as a template. Set `VITE_API_URL` when the API is hosted elsewhere, for example `VITE_API_URL=https://api.example.com/api`.
+
+## API surface
+
+- `GET /api/health`, `GET /api/posts`, `GET /api/profile`
+- `POST /api/posts`, `PUT /api/posts/:id`, `DELETE /api/posts/:id`
+- `POST /api/posts/:id/like|bookmark|follow|share`
+- `POST /api/posts/:id/comments`, `POST /api/comments/:id/like`
+- `POST /api/auth`, `PUT /api/profile`
+
+The backend uses `psycopg` for PostgreSQL connectivity. The database schema is created with PostgreSQL SQL in `backend/server.py`.

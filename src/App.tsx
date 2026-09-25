@@ -28,6 +28,7 @@ type Post = {
   comments: CommentNode[]
   shares: number
   trendingScore: number
+  isLiked?: boolean
   isBookmarked: boolean
   isFollowed: boolean
 }
@@ -781,9 +782,36 @@ function App() {
   const [authMode, setAuthMode] = useState<'login' | 'signup' | null>('login')
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' })
   const [authError, setAuthError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [currentUser, setCurrentUser] = useState(initialUser)
+
+  const getPasswordStrength = (password: string) => {
+    if (!password) {
+      return { label: '', tone: 'empty' }
+    }
+
+    const checks = [
+      /[a-z]/.test(password),
+      /[A-Z]/.test(password),
+      /\d/.test(password),
+      /[^A-Za-z0-9]/.test(password),
+    ].filter(Boolean).length
+
+    if (password.length >= 8 && checks >= 4) {
+      return { label: 'Strong', tone: 'strong' }
+    }
+
+    if (password.length >= 8 && checks >= 2) {
+      return { label: 'Good', tone: 'good' }
+    }
+
+    return { label: 'Weak', tone: 'weak' }
+  }
+
+  const passwordStrength = getPasswordStrength(authForm.password)
   const [posts, setPosts] = useState<Post[]>(initialPosts)
-  const [selectedTag, setSelectedTag] = useState('All')
+  const [selectedTags, setSelectedTags] = useState<string[]>([])
+  const [showAllTags, setShowAllTags] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [page, setPage] = useState(1)
   const [composerOpen, setComposerOpen] = useState(false)
@@ -857,14 +885,16 @@ function App() {
     [posts],
   )
 
+  const visibleTags = showAllTags ? allTags : allTags.slice(0, 7)
+
   const filteredPosts = useMemo(() => {
     return posts.filter((post) => {
-      const matchesTag = selectedTag === 'All' || post.tags.includes(selectedTag)
+      const matchesTag = selectedTags.length === 0 || post.tags.some((tag) => selectedTags.includes(tag))
       const haystack = `${post.title} ${post.excerpt} ${post.author} ${post.tags.join(' ')}`.toLowerCase()
       const matchesSearch = haystack.includes(searchTerm.toLowerCase())
       return matchesTag && matchesSearch
     })
-  }, [posts, searchTerm, selectedTag])
+  }, [posts, searchTerm, selectedTags])
 
   const pageSize = 3
   const totalPages = Math.max(1, Math.ceil(filteredPosts.length / pageSize))
@@ -882,6 +912,15 @@ function App() {
     requestAnimationFrame(() => {
       articleDetailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
+  }
+
+  const toggleTag = (tag: string) => {
+    setSelectedTags((currentTags) =>
+      currentTags.includes(tag)
+        ? currentTags.filter((currentTag) => currentTag !== tag)
+        : [...currentTags, tag],
+    )
+    setPage(1)
   }
 
   const changePage = (nextPage: number) => {
@@ -982,12 +1021,15 @@ function App() {
   }
 
   const toggleLike = (postId: string) => {
-    setPosts((currentPosts) =>
-      currentPosts.map((post) =>
-        post.id === postId ? { ...post, likes: post.likes + 1 } : post,
-      ),
-    )
-    void apiRequest(`/posts/${postId}/like`, { method: 'POST' })
+    void apiRequest<Post>(`/posts/${postId}/like`, { method: 'POST' }).then((updatedPost) => {
+      setPosts((currentPosts) =>
+        currentPosts.map((post) =>
+          post.id === postId
+            ? { ...post, likes: updatedPost.likes, isLiked: updatedPost.isLiked }
+            : post,
+        ),
+      )
+    })
   }
 
   const toggleBookmark = (postId: string) => {
@@ -1253,7 +1295,31 @@ function App() {
                 <label><span>Your name</span><input autoFocus value={authForm.name} onChange={(event) => updateAuthForm('name', event.target.value)} placeholder="Ava Rodriguez" /></label>
               )}
               <label><span>Email address</span><input type="email" value={authForm.email} onChange={(event) => updateAuthForm('email', event.target.value)} placeholder="you@example.com" /></label>
-              <label><span>Password</span><input type="password" value={authForm.password} onChange={(event) => updateAuthForm('password', event.target.value)} placeholder="••••••••" /></label>
+              <label className="password-field">
+                <span>Password</span>
+                <div className="password-input-wrap">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={authForm.password}
+                    onChange={(event) => updateAuthForm('password', event.target.value)}
+                    placeholder="••••••••"
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    onClick={() => setShowPassword((current) => !current)}
+                  >
+                    {showPassword ? 'Hide' : 'Show'}
+                  </button>
+                </div>
+                {authForm.password && (
+                  <div className="password-strength" aria-live="polite">
+                    <span>Password strength</span>
+                    <strong className={passwordStrength.tone}>{passwordStrength.label}</strong>
+                  </div>
+                )}
+              </label>
               <div className="auth-form-meta">
                 <label className="check-label"><input type="checkbox" /> <span>Remember me</span></label>
                 {authMode === 'login' && <button type="button" className="auth-link">Forgot password?</button>}
@@ -1474,20 +1540,24 @@ function App() {
               <p>Topics</p>
             </div>
             <div className="tag-cloud">
-              {allTags.map((tag) => (
+              {visibleTags.map((tag) => (
                 <button
                   key={tag}
                   type="button"
-                  className={tag === selectedTag ? 'tag active' : 'tag'}
-                  onClick={() => {
-                    setSelectedTag(tag)
-                    setPage(1)
-                  }}
+                  className={tag === 'All'
+                    ? (selectedTags.length === 0 ? 'tag active' : 'tag')
+                    : (selectedTags.includes(tag) ? 'tag active' : 'tag')}
+                  onClick={() => tag === 'All' ? (setSelectedTags([]), setPage(1)) : toggleTag(tag)}
                 >
                   #{tag}
                 </button>
               ))}
             </div>
+            {allTags.length > 7 && (
+              <button type="button" className="text-button topics-toggle" onClick={() => setShowAllTags((current) => !current)}>
+                {showAllTags ? 'Less' : 'More'}
+              </button>
+            )}
           </section>
         </aside>
 
@@ -1547,7 +1617,7 @@ function App() {
                   {post.tags.map((tag) => (
                     <button key={tag} type="button" className="tag mini" onClick={(event) => {
                       event.stopPropagation()
-                      setSelectedTag(tag)
+                      toggleTag(tag)
                     }}>
                       #{tag}
                     </button>
@@ -1566,7 +1636,7 @@ function App() {
                       event.stopPropagation()
                       toggleLike(post.id)
                     }}>
-                      Like
+                      {post.isLiked ? 'Dislike' : 'Like'}
                     </button>
                     <button type="button" onClick={(event) => {
                       event.stopPropagation()
@@ -1634,26 +1704,6 @@ function App() {
 
           <section className="panel-card">
             <div className="section-head">
-              <p>SEO snapshot</p>
-            </div>
-            <ul className="seo-list">
-              <li>
-                <span>Score</span>
-                <strong>98/100</strong>
-              </li>
-              <li>
-                <span>Meta title</span>
-                <strong>{activePost.title.slice(0, 42)}...</strong>
-              </li>
-              <li>
-                <span>Keywords</span>
-                <strong>{activePost.tags.join(', ')}</strong>
-              </li>
-            </ul>
-          </section>
-
-          <section className="panel-card">
-            <div className="section-head">
               <p>Bookmarks</p>
             </div>
             <ul className="bookmark-list">
@@ -1697,7 +1747,9 @@ function App() {
             </div>
           </div>
           <div className="article-toolbar">
-            <button type="button" onClick={() => toggleLike(activePost.id)}>❤ {activePost.likes}</button>
+            <button type="button" onClick={() => toggleLike(activePost.id)}>
+              {activePost.isLiked ? 'Dislike' : 'Like'} · {activePost.likes}
+            </button>
             <button type="button" onClick={() => toggleBookmark(activePost.id)}>
               {activePost.isBookmarked ? 'Bookmarked' : 'Bookmark'}
             </button>
