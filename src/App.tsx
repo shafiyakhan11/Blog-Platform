@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import './App.css'
+import { apiRequest } from './api'
 
 type CommentNode = {
   id: string
@@ -800,6 +801,38 @@ function App() {
   const feedTopRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
+    const loadBackendState = async () => {
+      try {
+        const backendPosts = await apiRequest<Post[]>('/posts')
+        const loadedPosts = backendPosts.length
+          ? backendPosts
+          : await apiRequest<Post[]>('/posts/bootstrap', {
+              method: 'POST',
+              body: JSON.stringify({ posts: initialPosts }),
+            })
+        setPosts(loadedPosts)
+        setActivePostId(loadedPosts[0]?.id ?? initialPosts[0].id)
+
+        const profile = await apiRequest<Record<string, string | number>>('/profile')
+        if (profile.name) {
+          setCurrentUser({
+            name: String(profile.name),
+            username: String(profile.username),
+            email: String(profile.email),
+            followers: Number(profile.followers),
+            following: Number(profile.following),
+            bio: String(profile.bio),
+          })
+        }
+      } catch {
+        // The local seed remains usable when the API is not running.
+      }
+    }
+
+    void loadBackendState()
+  }, [])
+
+  useEffect(() => {
     const updateBackToTopVisibility = () => {
       const composer = commentComposerRef.current
       const composerBounds = composer?.getBoundingClientRect()
@@ -870,25 +903,29 @@ function App() {
     const timestamp = new Date().toISOString()
 
     if (editingPostId) {
+      const updatedPost = {
+        title: draft.title.trim() || 'Untitled post',
+        excerpt: draft.excerpt.trim() || 'A new editorial update.',
+        tags: normalizedTags.length ? normalizedTags : ['Editorial'],
+        content,
+        readTime: Math.max(2, Math.round(content.split(/\s+/).length / 220)),
+        publishedDate: new Date(timestamp).toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }),
+      }
       setPosts((currentPosts) =>
         currentPosts.map((post) =>
           post.id === editingPostId
-            ? {
-                ...post,
-                title: draft.title.trim() || 'Untitled post',
-                excerpt: draft.excerpt.trim() || 'A new editorial update.',
-                tags: normalizedTags.length ? normalizedTags : ['Editorial'],
-                content,
-                readTime: Math.max(2, Math.round(content.split(/\s+/).length / 220)),
-                publishedDate: new Date(timestamp).toLocaleDateString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                  year: 'numeric',
-                }),
-              }
+            ? { ...post, ...updatedPost }
             : post,
         ),
       )
+      void apiRequest(`/posts/${editingPostId}`, {
+        method: 'PUT',
+        body: JSON.stringify(updatedPost),
+      })
     } else {
       const newPost: Post = {
         id: `post-${Date.now()}`,
@@ -916,6 +953,10 @@ function App() {
 
       setPosts((currentPosts) => [newPost, ...currentPosts])
       setActivePostId(newPost.id)
+      void apiRequest<Post>('/posts', {
+        method: 'POST',
+        body: JSON.stringify(newPost),
+      })
     }
 
     setComposerOpen(false)
@@ -934,6 +975,10 @@ function App() {
   const saveProfile = () => {
     setCurrentUser({ ...profileDraft })
     setProfileEditing(false)
+    void apiRequest('/profile', {
+      method: 'PUT',
+      body: JSON.stringify(profileDraft),
+    })
   }
 
   const toggleLike = (postId: string) => {
@@ -942,6 +987,7 @@ function App() {
         post.id === postId ? { ...post, likes: post.likes + 1 } : post,
       ),
     )
+    void apiRequest(`/posts/${postId}/like`, { method: 'POST' })
   }
 
   const toggleBookmark = (postId: string) => {
@@ -950,6 +996,7 @@ function App() {
         post.id === postId ? { ...post, isBookmarked: !post.isBookmarked } : post,
       ),
     )
+    void apiRequest(`/posts/${postId}/bookmark`, { method: 'POST' })
   }
 
   const toggleFollow = (postId: string) => {
@@ -958,6 +1005,7 @@ function App() {
         post.id === postId ? { ...post, isFollowed: !post.isFollowed } : post,
       ),
     )
+    void apiRequest(`/posts/${postId}/follow`, { method: 'POST' })
   }
 
   const handleShare = async (postId: string) => {
@@ -980,6 +1028,7 @@ function App() {
         ),
       )
     }
+    void apiRequest(`/posts/${postId}/share`, { method: 'POST' })
   }
 
   const onCommentSubmit = (postId: string, parentId?: string) => {
@@ -1010,6 +1059,15 @@ function App() {
         }
       }),
     )
+    void apiRequest<Post>(`/posts/${postId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({
+        parentId,
+        author: currentUser.name,
+        avatar: getUserInitials(currentUser.name),
+        content: replyText,
+      }),
+    })
 
     setCommentDrafts((current) => ({ ...current, [key]: '' }))
     setReplyState((current) => ({ ...current, [key]: null }))
@@ -1023,6 +1081,7 @@ function App() {
           : post,
       ),
     )
+    void apiRequest(`/comments/${commentId}/like`, { method: 'POST' })
   }
 
   const renderComment = (comment: CommentNode, depth = 0): React.ReactNode => (
@@ -1083,6 +1142,7 @@ function App() {
       const remaining = posts.filter((post) => post.id !== postId)
       setActivePostId(remaining[0]?.id ?? '')
     }
+    void apiRequest(`/posts/${postId}`, { method: 'DELETE' })
   }
 
   const updateAuthForm = (field: keyof typeof authForm, value: string) => {
@@ -1090,11 +1150,18 @@ function App() {
     setAuthError('')
   }
 
+  const isValidPassword = (password: string) => /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/.test(password)
+
   const submitAuth = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
     if (!authForm.email.trim() || !authForm.password.trim() || (authMode === 'signup' && !authForm.name.trim())) {
       setAuthError('Please complete all required fields.')
+      return
+    }
+
+    if (authMode === 'signup' && !isValidPassword(authForm.password)) {
+      setAuthError('Password must be at least 8 characters and include uppercase, lowercase, a number, and a symbol.')
       return
     }
 
@@ -1107,6 +1174,20 @@ function App() {
       followers: authMode === 'signup' ? 0 : current.followers,
       following: authMode === 'signup' ? 0 : current.following,
     }))
+    void apiRequest<Record<string, string | number>>('/auth', {
+      method: 'POST',
+      body: JSON.stringify({ ...authForm, name }),
+    }).then((profile) => {
+      setCurrentUser((current) => ({
+        ...current,
+        name: String(profile.name),
+        username: String(profile.username),
+        email: String(profile.email),
+        followers: Number(profile.followers),
+        following: Number(profile.following),
+        bio: String(profile.bio),
+      }))
+    }).catch(() => undefined)
     setAuthMode(null)
   }
 
