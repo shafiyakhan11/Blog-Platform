@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000/api'
+const API_BASE = (import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000/api/v1').replace(/\/+$/, '')
 const AUTH_TOKEN_KEY = 'draftflow_access_token'
 
 export const setAuthToken = (token: string | null) => {

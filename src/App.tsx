@@ -1093,12 +1093,28 @@ function App() {
   }
 
   const toggleLike = (postId: string) => {
-    void apiRequest<Post>(`/posts/${postId}/like`, { method: 'POST' }).then((updatedPost) => {
+    const post = posts.find((item) => item.id === postId)
+    if (!post) return
+
+    const nextLiked = !post.isLiked
+    const nextCount = Math.max(0, post.likes + (nextLiked ? 1 : -1))
+
+    setPosts((currentPosts) =>
+      currentPosts.map((item) =>
+        item.id === postId
+          ? { ...item, likes: nextCount, isLiked: nextLiked }
+          : item,
+      ),
+    )
+
+    void apiRequest<{ success: boolean; data: { liked: boolean } }>(`/posts/${postId}/like`, {
+      method: nextLiked ? 'POST' : 'DELETE',
+    }).catch(() => {
       setPosts((currentPosts) =>
-        currentPosts.map((post) =>
-          post.id === postId
-            ? { ...post, likes: updatedPost.likes, isLiked: updatedPost.isLiked }
-            : post,
+        currentPosts.map((item) =>
+          item.id === postId
+            ? { ...item, likes: post.likes, isLiked: post.isLiked }
+            : item,
         ),
       )
     })
@@ -1315,13 +1331,18 @@ function App() {
       setAuthMode(null)
     } catch (error) {
       const message = error instanceof Error ? error.message : ''
-      setAuthError(message.includes('already exists')
-        ? 'An account with this email already exists. Please sign in.'
-        : mode === 'login'
-          ? 'Email or password is incorrect. Check both and try again.'
-          : 'Account could not be created. Check the details and try again.')
+      if (message.toLowerCase().includes('already exists')) {
+        setAuthError('An account with this email already exists. Please sign in.')
+      } else if (error instanceof TypeError) {
+        setAuthError('Unable to reach the server. Make sure the backend is running and try again.')
+      } else if (mode === 'login') {
+        setAuthError('Email or password is incorrect. Check both and try again.')
+      } else {
+        setAuthError(message || 'Account could not be created. Check the details and try again.')
+      }
     } finally {
       setAuthSubmitting(false)
+
     }
   }
 
@@ -1346,7 +1367,7 @@ function App() {
         <section className="auth-layout">
           <div className="auth-intro">
             <div className="auth-brand">
-              <span className="brand-logo">P</span>
+              <span className="brand-logo">d</span>
               <span>DraftFlow</span>
             </div>
             <div className="auth-intro-copy">
@@ -1458,7 +1479,7 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-wrap">
-          <div className="brand-logo">P</div>
+          <div className="brand-logo">d</div>
           <div>
             <p className="eyebrow">Your Own Workspace</p>
             <h1>DraftFlow</h1>
