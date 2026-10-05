@@ -13,9 +13,9 @@ python backend/server.py
 npm run dev
 ```
 
-Create a PostgreSQL database named `draftflow` before starting the API. The API runs at `http://127.0.0.1:8000`. The Vite app runs at the URL printed by `npm run dev` (normally `http://localhost:5173`). Tables are created automatically at API startup, and the existing sample posts are bootstrapped on the first frontend load.
+Create a PostgreSQL database named `blog_portal` before starting the API. The API runs at `http://127.0.0.1:8000`. The Vite app runs at the URL printed by `npm run dev` (normally `http://localhost:5173`). Tables are created automatically at API startup, and the existing sample posts are bootstrapped on the first frontend load.
 
-Set `DATABASE_URL` for PostgreSQL, using [backend/.env.example](backend/.env.example) as a template. Set `VITE_API_URL` when the API is hosted elsewhere, for example `VITE_API_URL=https://api.example.com/api`.
+Copy [backend/.env.example](backend/.env.example) to `backend/.env` and set `DATABASE_URL` to your PostgreSQL server's connection string. The backend loads this file automatically; it is ignored by Git. Create the `blog_portal` database on that server before starting the API. Set `VITE_API_URL` when the API is hosted elsewhere, for example `VITE_API_URL=https://api.example.com/api`.
 
 ## API surface
 

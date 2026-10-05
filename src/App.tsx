@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import './App.css'
-import { apiRequest } from './api'
+import { apiRequest, setAuthToken } from './api'
 
 type CommentNode = {
   id: string
@@ -33,6 +33,27 @@ type Post = {
   isFollowed: boolean
 }
 
+type ApiPost = {
+  id: number | string
+  title: string
+  excerpt?: string | null
+  content: string
+  author: string
+  author_handle?: string
+  avatar?: string
+  tags?: string[]
+  published_date?: string
+  read_time?: number
+  likes?: number
+  views?: number
+  comments?: CommentNode[]
+  shares?: number
+  trending_score?: number
+  is_liked?: boolean
+  is_bookmarked?: boolean
+  is_followed?: boolean
+}
+
 const initialUser = {
   name: 'Your Name',
   username: '@yourname',
@@ -46,6 +67,34 @@ const getUserInitials = (name: string) => {
   const parts = name.trim().split(/\s+/).filter(Boolean)
   if (parts.length > 1) return `${parts[0][0]}${parts[1][0]}`.toUpperCase()
   return (parts[0] ?? 'U').slice(0, 2).toUpperCase()
+}
+
+const mapApiPost = (post: ApiPost): Post => {
+  const publishedAt = post.published_date ? new Date(post.published_date) : null
+  const publishedDate = publishedAt && !Number.isNaN(publishedAt.getTime())
+    ? publishedAt.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
+    : 'Recently'
+
+  return {
+    id: String(post.id),
+    title: post.title,
+    excerpt: post.excerpt ?? post.content.slice(0, 160),
+    content: post.content,
+    author: post.author,
+    authorHandle: post.author_handle ?? '',
+    avatar: post.avatar ?? getUserInitials(post.author),
+    tags: post.tags ?? [],
+    publishedDate,
+    readTime: post.read_time ?? 1,
+    likes: post.likes ?? 0,
+    views: post.views ?? 0,
+    comments: post.comments ?? [],
+    shares: post.shares ?? 0,
+    trendingScore: post.trending_score ?? 0,
+    isLiked: post.is_liked ?? false,
+    isBookmarked: post.is_bookmarked ?? false,
+    isFollowed: post.is_followed ?? false,
+  }
 }
 
 const initialPosts: Post[] = [
@@ -782,6 +831,7 @@ function App() {
   const [authMode, setAuthMode] = useState<'login' | 'signup' | null>('login')
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' })
   const [authError, setAuthError] = useState('')
+  const [authSubmitting, setAuthSubmitting] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [currentUser, setCurrentUser] = useState(initialUser)
 
@@ -797,11 +847,11 @@ function App() {
       /[^A-Za-z0-9]/.test(password),
     ].filter(Boolean).length
 
-    if (password.length >= 8 && checks >= 4) {
+    if (password.length >= 12 && checks >= 3) {
       return { label: 'Strong', tone: 'strong' }
     }
 
-    if (password.length >= 8 && checks >= 2) {
+    if (password.length >= 8) {
       return { label: 'Good', tone: 'good' }
     }
 
@@ -809,7 +859,9 @@ function App() {
   }
 
   const passwordStrength = getPasswordStrength(authForm.password)
-  const [posts, setPosts] = useState<Post[]>(initialPosts)
+  const [posts, setPosts] = useState<Post[]>([])
+  const [postLoadStatus, setPostLoadStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [postReloadKey, setPostReloadKey] = useState(0)
   const [selectedTags, setSelectedTags] = useState<string[]>([])
   const [showAllTags, setShowAllTags] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
@@ -817,11 +869,13 @@ function App() {
   const [composerOpen, setComposerOpen] = useState(false)
   const [editingPostId, setEditingPostId] = useState<string | null>(null)
   const [draft, setDraft] = useState(defaultDraft)
-  const [activePostId, setActivePostId] = useState(initialPosts[0].id)
+  const [activePostId, setActivePostId] = useState('')
   const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>({})
   const [replyState, setReplyState] = useState<Record<string, string | null>>({})
   const [profileOpen, setProfileOpen] = useState(false)
   const [profileEditing, setProfileEditing] = useState(false)
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [profileSaveError, setProfileSaveError] = useState('')
   const [profileDraft, setProfileDraft] = useState(initialUser)
   const [showBackToTop, setShowBackToTop] = useState(false)
   const articleDetailRef = useRef<HTMLElement>(null)
@@ -829,36 +883,29 @@ function App() {
   const feedTopRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const loadBackendState = async () => {
-      try {
-        const backendPosts = await apiRequest<Post[]>('/posts')
-        const loadedPosts = backendPosts.length
-          ? backendPosts
-          : await apiRequest<Post[]>('/posts/bootstrap', {
-              method: 'POST',
-              body: JSON.stringify({ posts: initialPosts }),
-            })
-        setPosts(loadedPosts)
-        setActivePostId(loadedPosts[0]?.id ?? initialPosts[0].id)
+    let cancelled = false
 
-        const profile = await apiRequest<Record<string, string | number>>('/profile')
-        if (profile.name) {
-          setCurrentUser({
-            name: String(profile.name),
-            username: String(profile.username),
-            email: String(profile.email),
-            followers: Number(profile.followers),
-            following: Number(profile.following),
-            bio: String(profile.bio),
-          })
-        }
+    const loadBackendPosts = async () => {
+      setPostLoadStatus('loading')
+      try {
+        const response = await apiRequest<ApiPost[]>('/posts')
+        if (cancelled) return
+        const loadedPosts = response.map(mapApiPost)
+        setPosts(loadedPosts)
+        setActivePostId(loadedPosts[0]?.id ?? '')
+        setPostLoadStatus('ready')
       } catch {
-        // The local seed remains usable when the API is not running.
+        if (cancelled) return
+        setPosts([])
+        setPostLoadStatus('error')
       }
     }
 
-    void loadBackendState()
-  }, [])
+    void loadBackendPosts()
+    return () => {
+      cancelled = true
+    }
+  }, [postReloadKey])
 
   useEffect(() => {
     const updateBackToTopVisibility = () => {
@@ -901,7 +948,7 @@ function App() {
   const visiblePosts = filteredPosts.slice((page - 1) * pageSize, page * pageSize)
 
   const activePost =
-    posts.find((post) => post.id === activePostId) ?? filteredPosts[0] ?? posts[0]
+    posts.find((post) => post.id === activePostId) ?? filteredPosts[0] ?? posts[0] ?? initialPosts[0]
 
   const trendingPosts = [...posts].sort((a, b) => b.trendingScore - a.trendingScore).slice(0, 4)
   const myPosts = posts.filter((post) => post.authorHandle === currentUser.username)
@@ -1011,13 +1058,38 @@ function App() {
     setProfileDraft((current) => ({ ...current, [field]: value }))
   }
 
-  const saveProfile = () => {
-    setCurrentUser({ ...profileDraft })
-    setProfileEditing(false)
-    void apiRequest('/profile', {
-      method: 'PUT',
-      body: JSON.stringify(profileDraft),
-    })
+  const saveProfile = async () => {
+    setProfileSaving(true)
+    setProfileSaveError('')
+    try {
+      const savedProfile = await apiRequest<{
+        name: string
+        username: string
+        email: string
+        bio: string
+        followers: number
+        following: number
+      }>('/profile', {
+        method: 'PUT',
+        body: JSON.stringify(profileDraft),
+      })
+      const updatedUser = {
+        ...profileDraft,
+        name: savedProfile.name,
+        username: savedProfile.username.startsWith('@') ? savedProfile.username : `@${savedProfile.username}`,
+        email: savedProfile.email,
+        bio: savedProfile.bio,
+        followers: Number(savedProfile.followers),
+        following: Number(savedProfile.following),
+      }
+      setCurrentUser(updatedUser)
+      setProfileDraft(updatedUser)
+      setProfileEditing(false)
+    } catch {
+      setProfileSaveError('Your profile could not be saved. Please try again.')
+    } finally {
+      setProfileSaving(false)
+    }
   }
 
   const toggleLike = (postId: string) => {
@@ -1192,62 +1264,73 @@ function App() {
     setAuthError('')
   }
 
-  const isValidPassword = (password: string) => /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/.test(password)
-
-  const submitAuth = (event: FormEvent<HTMLFormElement>) => {
+  const submitAuth = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+
+    if (authMode === null) return
 
     if (!authForm.email.trim() || !authForm.password.trim() || (authMode === 'signup' && !authForm.name.trim())) {
       setAuthError('Please complete all required fields.')
       return
     }
 
-    if (authMode === 'signup' && !isValidPassword(authForm.password)) {
-      setAuthError('Password must be at least 8 characters and include uppercase, lowercase, a number, and a symbol.')
+    if (authForm.password.length < 8) {
+      setAuthError('Password must be at least 8 characters.')
       return
     }
 
-    const name = authForm.name.trim() || authForm.email.split('@')[0]
-    setCurrentUser((current) => ({
-      ...current,
-      name,
-      username: `@${name.toLowerCase().replace(/[^a-z0-9]+/g, '') || 'writer'}`,
-      email: authForm.email.trim(),
-      followers: authMode === 'signup' ? 0 : current.followers,
-      following: authMode === 'signup' ? 0 : current.following,
-    }))
-    void apiRequest<Record<string, string | number>>('/auth', {
-      method: 'POST',
-      body: JSON.stringify({ ...authForm, name }),
-    }).then((profile) => {
+    const mode = authMode
+    setAuthSubmitting(true)
+    setAuthError('')
+    try {
+      const result = await apiRequest<{
+        access_token: string
+        user: {
+          name: string
+          username: string
+          email: string
+          bio: string
+          followers: number
+          following: number
+        }
+      }>('/auth', {
+        method: 'POST',
+        body: JSON.stringify({
+          mode,
+          name: authForm.name.trim(),
+          email: authForm.email.trim(),
+          password: authForm.password,
+        }),
+      })
+      setAuthToken(result.access_token)
       setCurrentUser((current) => ({
         ...current,
-        name: String(profile.name),
-        username: String(profile.username),
-        email: String(profile.email),
-        followers: Number(profile.followers),
-        following: Number(profile.following),
-        bio: String(profile.bio),
+        name: result.user.name,
+        username: result.user.username.startsWith('@') ? result.user.username : `@${result.user.username}`,
+        email: result.user.email,
+        bio: result.user.bio,
+        followers: Number(result.user.followers),
+        following: Number(result.user.following),
       }))
-    }).catch(() => undefined)
-    setAuthMode(null)
+      setAuthMode(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : ''
+      setAuthError(message.includes('already exists')
+        ? 'An account with this email already exists. Please sign in.'
+        : mode === 'login'
+          ? 'Email or password is incorrect. Check both and try again.'
+          : 'Account could not be created. Check the details and try again.')
+    } finally {
+      setAuthSubmitting(false)
+    }
   }
 
   const signInWithProvider = (provider: 'Google' | 'Facebook') => {
-    const name = provider === 'Google' ? 'Google User' : 'Facebook User'
-    const username = provider === 'Google' ? '@googleuser' : '@facebookuser'
-
-    setCurrentUser((current) => ({
-      ...current,
-      name,
-      username,
-      email: `${provider.toLowerCase()}@example.com`,
-    }))
-    setAuthError('')
-    setAuthMode(null)
+    setAuthError(`${provider} sign-in is not configured. Use your email and password.`)
   }
 
   const logout = () => {
+    setAuthToken(null)
     setProfileOpen(false)
     setProfileEditing(false)
     setAuthForm({ name: '', email: '', password: '' })
@@ -1292,14 +1375,16 @@ function App() {
 
             <form className="auth-form" onSubmit={submitAuth}>
               {authMode === 'signup' && (
-                <label><span>Your name</span><input autoFocus value={authForm.name} onChange={(event) => updateAuthForm('name', event.target.value)} placeholder="Ava Rodriguez" /></label>
+                <label><span>Your name</span><input autoFocus required value={authForm.name} onChange={(event) => updateAuthForm('name', event.target.value)} placeholder="Ava Rodriguez" /></label>
               )}
-              <label><span>Email address</span><input type="email" value={authForm.email} onChange={(event) => updateAuthForm('email', event.target.value)} placeholder="you@example.com" /></label>
+              <label><span>Email address</span><input type="email" required value={authForm.email} onChange={(event) => updateAuthForm('email', event.target.value)} placeholder="you@example.com" /></label>
               <label className="password-field">
                 <span>Password</span>
                 <div className="password-input-wrap">
                   <input
                     type={showPassword ? 'text' : 'password'}
+                    required
+                    minLength={8}
                     value={authForm.password}
                     onChange={(event) => updateAuthForm('password', event.target.value)}
                     placeholder="••••••••"
@@ -1325,7 +1410,7 @@ function App() {
                 {authMode === 'login' && <button type="button" className="auth-link">Forgot password?</button>}
               </div>
               {authError && <p className="auth-error" role="alert">{authError}</p>}
-              <button type="submit" className="auth-submit">{authMode === 'login' ? 'Sign in' : 'Create account'} <span>→</span></button>
+              <button type="submit" className="auth-submit" disabled={authSubmitting}>{authSubmitting ? 'Checking...' : authMode === 'login' ? 'Sign in' : 'Create account'} <span>→</span></button>
             </form>
 
             <div className="auth-divider"><span>or continue with</span></div>
@@ -1342,6 +1427,29 @@ function App() {
             <p className="auth-switch">{authMode === 'login' ? 'New to DraftFlow?' : 'Already have an account?'} <button type="button" className="auth-link" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>{authMode === 'login' ? 'Create an account' : 'Sign in'}</button></p>
           </section>
         </section>
+      </main>
+    )
+  }
+
+  if (postLoadStatus === 'loading') {
+    return <main className="feed-state" aria-live="polite">Loading posts from the database...</main>
+  }
+
+  if (postLoadStatus === 'error') {
+    return (
+      <main className="feed-state" role="alert">
+        <h1>Posts could not be loaded</h1>
+        <p>Check that the backend is running, then try again.</p>
+        <button type="button" onClick={() => setPostReloadKey((key) => key + 1)}>Try again</button>
+      </main>
+    )
+  }
+
+  if (posts.length === 0) {
+    return (
+      <main className="feed-state">
+        <h1>No published posts yet</h1>
+        <p>Published articles from the database will appear here.</p>
       </main>
     )
   }
@@ -1437,9 +1545,10 @@ function App() {
                     Bio
                     <textarea value={profileDraft.bio} onChange={(event) => updateProfileDraft('bio', event.target.value)} rows={3} />
                   </label>
+                  {profileSaveError && <p className="auth-error" role="alert">{profileSaveError}</p>}
                   <div className="profile-edit-actions">
                     <button type="button" className="secondary-button" onClick={() => setProfileEditing(false)}>Cancel</button>
-                    <button type="button" className="primary-button" onClick={saveProfile}>Save profile</button>
+                    <button type="button" className="primary-button" onClick={saveProfile} disabled={profileSaving}>{profileSaving ? 'Saving...' : 'Save profile'}</button>
                   </div>
                 </div>
               ) : (

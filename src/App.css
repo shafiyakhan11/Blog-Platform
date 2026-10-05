@@ -4,6 +4,34 @@
   color: #1e293b;
 }
 
+.feed-state {
+  min-height: 100vh;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+  color: #1e293b;
+  text-align: center;
+}
+
+.feed-state h1 {
+  font-size: 1.5rem;
+}
+
+.feed-state p {
+  color: #64748b;
+}
+
+.feed-state button {
+  margin-top: 8px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #fff;
+}
+
 button,
 input,
 textarea {
