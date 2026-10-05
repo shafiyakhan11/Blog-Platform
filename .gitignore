@@ -27,4 +27,4 @@ backend/.env.*
 *.njsproj
 *.sln
 *.sw?
-*.secret.py
+secret.py
