@@ -15,7 +15,7 @@ npm run dev
 
 Create a PostgreSQL database named `blog_portal` before starting the API. The API runs at `http://127.0.0.1:8000`. The Vite app runs at the URL printed by `npm run dev` (normally `http://localhost:5173`). Tables are created automatically at API startup, and the existing sample posts are bootstrapped on the first frontend load.
 
-Create `backend/.env` and set `DATABASE_URL` to your PostgreSQL server's connection string and `GOOGLE_CLIENT_ID` to your Google OAuth web client ID. The backend loads this file automatically; it is ignored by Git. Set the same client ID as `VITE_GOOGLE_CLIENT_ID` in the frontend `.env.local` file. In Google Cloud Console, add the frontend's local and production origins to the OAuth client's authorized JavaScript origins. Create the `blog_portal` database on that server before starting the API. Set `VITE_API_URL` when the API is hosted elsewhere, for example `VITE_API_URL=https://api.example.com/api`.
+Create `backend/.env` and set `DATABASE_URL` to your PostgreSQL server's connection string and `GOOGLE_CLIENT_ID` to your Google OAuth web client ID. The backend loads this file automatically; it is ignored by Git. Set the same client ID as `VITE_GOOGLE_CLIENT_ID` in `src/.env.local`; Vite loads frontend environment variables from `src`. In Google Cloud Console, add the frontend's local and production origins to the OAuth client's authorized JavaScript origins. Create the `blog_portal` database on that server before starting the API. Set `VITE_API_URL` in `src/.env.local` when the API is hosted elsewhere, for example `VITE_API_URL=https://api.example.com/api`.
 
 ## API surface
 
