@@ -14,7 +14,7 @@ a_engine = create_engine(DATABASE_URL, future=True, echo=False)
 SessionLocal = sessionmaker(bind=a_engine, autoflush=False, autocommit=False, future=True)
 
 
-def get_db() -> Session:
+def get_db() -> Session: # type: ignore
     db = SessionLocal()
     try:
         yield db

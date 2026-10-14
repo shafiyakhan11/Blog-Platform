@@ -1,6 +1,37 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import './App.css'
 import { apiRequest, setAuthToken } from './api'
+
+type GoogleCredentialResponse = {
+  credential: string
+}
+
+type GoogleIdentityApi = {
+  accounts: {
+    id: {
+      initialize: (options: {
+        client_id: string
+        callback: (response: GoogleCredentialResponse) => void
+      }) => void
+      renderButton: (
+        element: HTMLElement,
+        options: {
+          theme: 'outline'
+          size: 'large'
+          text: 'continue_with'
+          shape: 'rectangular'
+          width: number
+        },
+      ) => void
+    }
+  }
+}
+
+declare global {
+  interface Window {
+    google?: GoogleIdentityApi
+  }
+}
 
 type CommentNode = {
   id: string
@@ -832,8 +863,93 @@ function App() {
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' })
   const [authError, setAuthError] = useState('')
   const [authSubmitting, setAuthSubmitting] = useState(false)
+  const [googleAuthReady, setGoogleAuthReady] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [currentUser, setCurrentUser] = useState(initialUser)
+  const googleButtonRef = useRef<HTMLDivElement>(null)
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim()
+
+  const signInWithGoogleCredential = useCallback(async (credential: string) => {
+    setAuthSubmitting(true)
+    setAuthError('')
+    try {
+      const result = await apiRequest<{
+        access_token: string
+        user: {
+          name: string
+          username: string
+          email: string
+          bio: string
+          followers: number
+          following: number
+        }
+      }>('/auth/google', {
+        method: 'POST',
+        body: JSON.stringify({ credential }),
+      })
+      setAuthToken(result.access_token)
+      setCurrentUser((current) => ({
+        ...current,
+        name: result.user.name,
+        username: result.user.username.startsWith('@') ? result.user.username : `@${result.user.username}`,
+        email: result.user.email,
+        bio: result.user.bio,
+        followers: Number(result.user.followers),
+        following: Number(result.user.following),
+      }))
+      setAuthMode(null)
+    } catch (error) {
+      setAuthError(
+        error instanceof Error
+          ? error.message
+          : 'Google sign-in failed. Please try again.',
+      )
+    } finally {
+      setAuthSubmitting(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (authMode === null || !googleClientId || !googleButtonRef.current) return
+
+    let cancelled = false
+    const renderGoogleButton = () => {
+      const google = window.google
+      const button = googleButtonRef.current
+      if (cancelled || !google || !button) return
+
+      google.accounts.id.initialize({
+        client_id: googleClientId,
+        callback: ({ credential }) => {
+          void signInWithGoogleCredential(credential)
+        },
+      })
+      button.replaceChildren()
+      google.accounts.id.renderButton(button, {
+        theme: 'outline',
+        size: 'large',
+        text: 'continue_with',
+        shape: 'rectangular',
+        width: Math.min(400, Math.max(200, Math.floor(button.clientWidth || 320))),
+      })
+      setGoogleAuthReady(true)
+    }
+    const script = document.querySelector<HTMLScriptElement>('#google-identity-script')
+    const handleScriptError = () => setAuthError('Unable to load Google sign-in. Please try again.')
+
+    if (window.google) {
+      renderGoogleButton()
+    } else if (script) {
+      script.addEventListener('load', renderGoogleButton)
+      script.addEventListener('error', handleScriptError)
+    }
+
+    return () => {
+      cancelled = true
+      script?.removeEventListener('load', renderGoogleButton)
+      script?.removeEventListener('error', handleScriptError)
+    }
+  }, [authMode, googleClientId, signInWithGoogleCredential])
 
   const getPasswordStrength = (password: string) => {
     if (!password) {
@@ -1346,10 +1462,6 @@ function App() {
     }
   }
 
-  const signInWithProvider = (provider: 'Google' | 'Facebook') => {
-    setAuthError(`${provider} sign-in is not configured. Use your email and password.`)
-  }
-
   const logout = () => {
     setAuthToken(null)
     setProfileOpen(false)
@@ -1436,14 +1548,23 @@ function App() {
 
             <div className="auth-divider"><span>or continue with</span></div>
             <div className="social-buttons">
-              <button type="button" className="social-button" onClick={() => signInWithProvider('Google')}>
-                <span className="google-mark">G</span>
-                Continue with Google
-              </button>
-              <button type="button" className="social-button" onClick={() => signInWithProvider('Facebook')}>
-                <span className="facebook-mark">f</span>
-                Continue with Facebook
-              </button>
+              {!googleAuthReady && (
+                <button
+                  type="button"
+                  className="social-button"
+                  onClick={() =>
+                    setAuthError(
+                      googleClientId 
+? 'Loading Google sign-in...' : 'Google sign-in is not configured. Please check the environment variables.',
+                    )
+                  }
+                  disabled={authSubmitting}
+                >
+                  <span className="google-mark">G</span>
+                  Continue with Google
+                </button>
+              )}
+              <div ref={googleButtonRef} className="google-button-container" />
             </div>
             <p className="auth-switch">{authMode === 'login' ? 'New to DraftFlow?' : 'Already have an account?'} <button type="button" className="auth-link" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>{authMode === 'login' ? 'Create an account' : 'Sign in'}</button></p>
           </section>

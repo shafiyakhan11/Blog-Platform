@@ -288,6 +288,7 @@ button:hover {
 .auth-divider::before, .auth-divider::after { content: ''; height: 1px; flex: 1; background: #e7e9ed; }
 .social-buttons { display: grid; gap: 10px; }
 .social-button { width: 100%; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #dfe3e9; border-radius: 10px; padding: 0.78rem; background: #ffffff; color: #34445f; font-size: 0.82rem; font-weight: 700; }
+.google-button-container { display: flex; width: 100%; justify-content: center; }
 .google-mark { display: inline-grid; width: 20px; height: 20px; place-items: center; margin-right: 6px; border-radius: 50%; color: #4285f4; font-weight: 900; }
 .facebook-mark { display: inline-grid; width: 20px; height: 20px; place-items: center; margin-right: 6px; border-radius: 50%; background: #1877f2; color: #ffffff; font-family: Arial, sans-serif; font-size: 1rem; font-weight: 900; }
 .auth-switch { justify-content: center; gap: 5px; margin-top: 25px; color: #8a95a4; font-size: 0.76rem; }

@@ -8,6 +8,9 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 
+from google.auth.exceptions import TransportError
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -46,6 +49,10 @@ class AuthRequest(BaseModel):
     name: str | None = None
 
 
+class GoogleAuthRequest(BaseModel):
+    credential: str = Field(min_length=1)
+
+
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
@@ -73,6 +80,19 @@ def decode_jwt(token: str) -> dict[str, Any]:
     if exp < datetime.now(timezone.utc).timestamp():
         raise HTTPException(status_code=401, detail="Token expired")
     return payload
+
+
+def verify_google_credential(credential: str, client_id: str) -> dict[str, Any]:
+    try:
+        return id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            audience=client_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid Google credential") from exc
+    except TransportError as exc:
+        raise HTTPException(status_code=503, detail="Google sign-in verification is temporarily unavailable") from exc
 
 
 async def get_auth_user(
@@ -163,6 +183,82 @@ def authenticate(payload: AuthRequest, db: Session = Depends(get_db)) -> dict[st
             "role": "user",
             "is_active": True,
             "is_verified": False,
+            "profile_visibility": "public",
+        }
+        insert_values = {key: value for key, value in insert_values.items() if key in user_columns}
+        columns = ", ".join(insert_values)
+        values = ", ".join(f":{column}" for column in insert_values)
+        user_id = db.execute(
+            text(f"INSERT INTO users ({columns}) VALUES ({values}) RETURNING id"),
+            insert_values,
+        ).scalar_one()
+        db.commit()
+        user = {
+            "id": user_id,
+            "name": name,
+            "username": username,
+            "email": email_value,
+            "bio": "",
+            "followers": 0,
+            "following": 0,
+        }
+
+    return {
+        "access_token": encode_jwt(int(user["id"])),
+        "token_type": "bearer",
+        "user": {
+            "id": user["id"],
+            "name": user["name"],
+            "username": user["username"],
+            "email": user["email"],
+            "bio": user.get("bio") or "",
+            "followers": user.get("followers") or 0,
+            "following": user.get("following") or 0,
+        },
+    }
+
+
+@app.post("/api/auth/google")
+def authenticate_google(payload: GoogleAuthRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    client_id = settings.google_client_id
+    if not client_id:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured")
+
+    claims = verify_google_credential(payload.credential, client_id)
+    email = claims.get("email")
+    if not isinstance(email, str) or not email.strip() or claims.get("email_verified") is not True:
+        raise HTTPException(status_code=401, detail="Google account must have a verified email address")
+
+    email_value = email.strip().lower()
+    user_columns = {column["name"] for column in inspect(db.get_bind()).get_columns("users")}
+    selected_columns = ["id", "name", "username", "email"]
+    selected_columns.extend(
+        column for column in ("bio", "followers", "following", "is_active") if column in user_columns
+    )
+    user = db.execute(
+        text(f"SELECT {', '.join(selected_columns)} FROM users WHERE LOWER(email) = :email"),
+        {"email": email_value},
+    ).mappings().one_or_none()
+
+    if user is not None and user.get("is_active") is False:
+        raise HTTPException(status_code=401, detail="User account is disabled")
+
+    if user is None:
+        name = claims.get("name")
+        name = name.strip() if isinstance(name, str) and name.strip() else email_value.split("@", 1)[0]
+        username_base = re.sub(r"[^a-z0-9_]", "", email_value.split("@", 1)[0])[:32] or "writer"
+        username = f"{username_base}_{secrets.token_hex(6)}"
+        insert_values: dict[str, Any] = {
+            "name": name,
+            "username": username,
+            "email": email_value,
+            "password_hash": hash_secure_password(secrets.token_urlsafe(32)),
+            "bio": "",
+            "followers": 0,
+            "following": 0,
+            "role": "user",
+            "is_active": True,
+            "is_verified": True,
             "profile_visibility": "public",
         }
         insert_values = {key: value for key, value in insert_values.items() if key in user_columns}
