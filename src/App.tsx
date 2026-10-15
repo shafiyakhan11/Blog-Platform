@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import './App.css'
-import { apiRequest, getAuthToken, legacyApiRequest, setAuthToken } from './api'
+import { ApiRequestError, apiRequest, getAuthRequestErrorMessage, getAuthToken, legacyApiRequest, setAuthToken } from './api'
 
 type GoogleCredentialResponse = {
   credential: string
@@ -928,11 +928,7 @@ function App() {
       }))
       setAuthMode(null)
     } catch (error) {
-      setAuthError(
-        error instanceof Error
-          ? error.message
-          : 'Google sign-in failed. Please try again.',
-      )
+      setAuthError(getAuthRequestErrorMessage(error, 'Google sign-in failed. Please try again.'))
     } finally {
       setAuthSubmitting(false)
     }
@@ -1285,6 +1281,18 @@ function App() {
 
     void apiRequest<{ success: boolean; data: { liked: boolean } }>(`/posts/${postId}/like`, {
       method: nextLiked ? 'POST' : 'DELETE',
+    }).then(({ data }) => {
+      setPosts((currentPosts) =>
+        currentPosts.map((item) => {
+          if (item.id !== postId) return item
+          const delta = Number(data.liked) - Number(Boolean(item.isLiked))
+          return {
+            ...item,
+            likes: Math.max(0, item.likes + delta),
+            isLiked: data.liked,
+          }
+        }),
+      )
     }).catch((error: unknown) => {
       setPosts((currentPosts) =>
         currentPosts.map((item) =>
@@ -1293,6 +1301,12 @@ function App() {
             : item,
         ),
       )
+      if (error instanceof ApiRequestError && error.status === 401) {
+        setAuthToken(null)
+        setAuthMode('login')
+        setAuthError('Your session has expired. Sign in again to like posts.')
+        return
+      }
       setActionError(error instanceof Error ? error.message : 'Could not update this like.')
     })
   }
@@ -1604,7 +1618,7 @@ function App() {
       } else if (mode === 'login') {
         setAuthError('Email or password is incorrect. Check both and try again.')
       } else {
-        setAuthError(message || 'Account could not be created. Check the details and try again.')
+        setAuthError(getAuthRequestErrorMessage(error, 'Account could not be created. Check the details and try again.'))
       }
     } finally {
       setAuthSubmitting(false)

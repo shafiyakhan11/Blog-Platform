@@ -1,6 +1,31 @@
-const API_BASE = (import.meta.env.VITE_API_URL ?? '/api/v1').replace(/\/+$/, '')
+const configuredApiBase = import.meta.env.VITE_API_URL?.trim().replace(/\/+$/, '')
+const API_BASE = !configuredApiBase
+  ? '/api/v1'
+  : configuredApiBase.endsWith('/api/v1')
+    ? configuredApiBase
+    : configuredApiBase.endsWith('/api')
+      ? `${configuredApiBase}/v1`
+      : `${configuredApiBase}/api/v1`
 const API_ROOT = API_BASE.replace(/\/v1$/, '')
 const AUTH_TOKEN_KEY = 'draftflow_access_token'
+
+export class ApiRequestError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+  }
+}
+
+export const getAuthRequestErrorMessage = (error: unknown, fallback: string): string => {
+  if (!(error instanceof Error)) return fallback
+  if (error.message.trim().toLowerCase() === 'not found') {
+    return 'The account service was not found. Confirm the latest backend is deployed and VITE_API_URL points to its API origin.'
+  }
+  return error.message || fallback
+}
 
 export const setAuthToken = (token: string | null, remember = false) => {
   if (token) {
@@ -32,7 +57,7 @@ const request = async <T,>(base: string, path: string, options?: RequestInit): P
   })
   if (!response.ok) {
     const error = await response.json().catch(() => null) as { detail?: string } | null
-    throw new Error(error?.detail ?? `API request failed: ${response.status}`)
+    throw new ApiRequestError(error?.detail ?? `API request failed: ${response.status}`, response.status)
   }
   return response.status === 204 ? ({} as T) : response.json() as Promise<T>
 }

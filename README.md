@@ -26,7 +26,7 @@ DraftFlow is a React/TypeScript publishing app backed by FastAPI, SQLAlchemy, an
    npm run dev
    ```
 
-The API listens on port `8000`; Vite proxies `/api` requests to it. The frontend uses the same-origin `/api/v1` and `/api` paths by default. Set `VITE_API_URL=https://api.example.com/api/v1` in `src/.env.local` if the API is on a separate origin.
+The API listens on port `8000`; Vite proxies `/api` requests to it. The frontend uses the same-origin `/api/v1` and `/api` paths by default. Set `VITE_API_URL=https://api.example.com/api/v1` in `src/.env.local` if the API is on a separate origin; a bare API origin is also accepted and normalized to `/api/v1`.
 
 ## Production deployment
 
