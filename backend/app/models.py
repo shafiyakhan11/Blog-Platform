@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
+
+USER_ID_TYPE = BigInteger().with_variant(Integer, "sqlite")
 
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    id: Mapped[int] = mapped_column(USER_ID_TYPE, primary_key=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     username: Mapped[str] = mapped_column(String(150), unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
@@ -37,7 +40,7 @@ class User(Base):
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    id: Mapped[int] = mapped_column(USER_ID_TYPE, primary_key=True, index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     token_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -45,6 +48,17 @@ class RefreshToken(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user: Mapped[User] = relationship(back_populates="refresh_tokens")
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
+
+    id: Mapped[int] = mapped_column(USER_ID_TYPE, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class Follow(Base):
@@ -56,7 +70,7 @@ class Follow(Base):
         Index("ix_follows_following_id", "following_id"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    id: Mapped[int] = mapped_column(USER_ID_TYPE, primary_key=True, index=True)
     follower_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     following_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -72,7 +86,7 @@ class FollowRequest(Base):
         CheckConstraint("requester_id <> target_user_id", name="ck_follow_request_not_self"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    id: Mapped[int] = mapped_column(USER_ID_TYPE, primary_key=True, index=True)
     requester_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     target_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
@@ -86,18 +100,29 @@ class FollowRequest(Base):
 class Post(Base):
     __tablename__ = "posts"
     __table_args__ = (
-        Index("ix_posts_author_id", "author_id"),
         Index("ix_posts_visibility", "visibility"),
         Index("ix_posts_status", "status"),
         Index("ix_posts_created_at", "created_at"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    author_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    id: Mapped[str] = mapped_column(String(100), primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
+    author_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    author_name: Mapped[str] = mapped_column("author", String(255), nullable=False, default="DraftFlow")
+    author_handle: Mapped[str] = mapped_column(String(255), nullable=False, default="@draftflow")
+    avatar: Mapped[str] = mapped_column(String(255), nullable=False, default="DF")
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    published_date: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    read_time: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    likes_count: Mapped[int] = mapped_column("likes", Integer, nullable=False, default=0)
+    views: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    shares: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    trending_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_bookmarked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_followed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[str] = mapped_column(String(20), default="published", nullable=False)
     visibility: Mapped[str] = mapped_column(String(20), default="public", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
@@ -105,39 +130,56 @@ class Post(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    author: Mapped[User] = relationship(back_populates="posts")
+    author: Mapped[User | None] = relationship(back_populates="posts")
     likes: Mapped[list["PostLike"]] = relationship(back_populates="post", cascade="all, delete-orphan")
     comments: Mapped[list["Comment"]] = relationship(back_populates="post", cascade="all, delete-orphan")
 
 
 class PostLike(Base):
-    __tablename__ = "post_likes"
+    __tablename__ = "user_post_likes"
     __table_args__ = (
         UniqueConstraint("post_id", "user_id", name="uq_post_like_pair"),
-        Index("ix_post_likes_post_id", "post_id"),
-        Index("ix_post_likes_user_id", "user_id"),
+        Index("ix_user_post_likes_post_id", "post_id"),
+        Index("ix_user_post_likes_user_id", "user_id"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"), nullable=False)
+    id: Mapped[int] = mapped_column(USER_ID_TYPE, primary_key=True, index=True)
+    post_id: Mapped[str] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"), nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     post: Mapped[Post] = relationship(back_populates="likes")
 
 
+class PostBookmark(Base):
+    __tablename__ = "post_bookmarks"
+    __table_args__ = (
+        UniqueConstraint("post_id", "user_id", name="uq_post_bookmark_pair"),
+        Index("ix_post_bookmarks_post_id", "post_id"),
+        Index("ix_post_bookmarks_user_id", "user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(USER_ID_TYPE, primary_key=True, index=True)
+    post_id: Mapped[str] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
 class Comment(Base):
     __tablename__ = "comments"
     __table_args__ = (
         Index("ix_comments_post_id", "post_id"),
-        Index("ix_comments_parent_comment_id", "parent_comment_id"),
+        Index("ix_comments_parent_comment_id", "parent_id"),
         Index("ix_comments_user_id", "user_id"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    post_id: Mapped[int] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"), nullable=False)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    parent_comment_id: Mapped[int | None] = mapped_column(ForeignKey("comments.id", ondelete="CASCADE"), nullable=True)
+    id: Mapped[str] = mapped_column(String(100), primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
+    post_id: Mapped[str] = mapped_column(ForeignKey("posts.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    parent_comment_id: Mapped[str | None] = mapped_column("parent_id", ForeignKey("comments.id", ondelete="CASCADE"), nullable=True)
+    author: Mapped[str] = mapped_column(String(255), nullable=False, default="DraftFlow")
+    avatar: Mapped[str] = mapped_column(String(255), nullable=False, default="DF")
+    likes_count: Mapped[int] = mapped_column("likes", Integer, nullable=False, default=0)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
@@ -154,8 +196,8 @@ class CommentLike(Base):
         Index("ix_comment_likes_user_id", "user_id"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    comment_id: Mapped[int] = mapped_column(ForeignKey("comments.id", ondelete="CASCADE"), nullable=False)
+    id: Mapped[int] = mapped_column(USER_ID_TYPE, primary_key=True, index=True)
+    comment_id: Mapped[str] = mapped_column(ForeignKey("comments.id", ondelete="CASCADE"), nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
@@ -171,7 +213,7 @@ class UserBlock(Base):
         Index("ix_user_blocks_blocked_id", "blocked_id"),
     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    id: Mapped[int] = mapped_column(USER_ID_TYPE, primary_key=True, index=True)
     blocker_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     blocked_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

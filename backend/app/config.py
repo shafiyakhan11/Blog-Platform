@@ -1,10 +1,5 @@
-import os
-from pathlib import Path
+from .core.config import settings
 
-from dotenv import load_dotenv
-
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
-
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:98989898@localhost:5432/blog_portal")
-JWT_SECRET = os.getenv("JWT_SECRET", "8dbc02a04f075ef24b3956f33df9285f31ef1c680ac612bdba39dda06c03498d")
-APP_NAME = "DraftFlow Social API"
+DATABASE_URL = settings.database_url
+JWT_SECRET = settings.jwt_secret_key
+APP_NAME = settings.app_name

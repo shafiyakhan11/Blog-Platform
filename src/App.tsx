@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import './App.css'
-import { apiRequest, setAuthToken } from './api'
+import { apiRequest, getAuthToken, legacyApiRequest, setAuthToken } from './api'
 
 type GoogleCredentialResponse = {
   credential: string
@@ -39,6 +39,7 @@ type CommentNode = {
   avatar: string
   content: string
   likes: number
+  isLiked?: boolean
   time: string
   replies: CommentNode[]
 }
@@ -77,12 +78,23 @@ type ApiPost = {
   read_time?: number
   likes?: number
   views?: number
-  comments?: CommentNode[]
+  comments?: ApiComment[]
   shares?: number
   trending_score?: number
   is_liked?: boolean
   is_bookmarked?: boolean
   is_followed?: boolean
+}
+
+type ApiComment = {
+  id: string
+  author: string
+  avatar: string
+  content: string
+  likes: number
+  is_liked?: boolean
+  time: string
+  replies?: ApiComment[]
 }
 
 const initialUser = {
@@ -99,6 +111,12 @@ const getUserInitials = (name: string) => {
   if (parts.length > 1) return `${parts[0][0]}${parts[1][0]}`.toUpperCase()
   return (parts[0] ?? 'U').slice(0, 2).toUpperCase()
 }
+
+const mapApiComment = (comment: ApiComment): CommentNode => ({
+  ...comment,
+  isLiked: comment.is_liked ?? false,
+  replies: comment.replies?.map(mapApiComment) ?? [],
+})
 
 const mapApiPost = (post: ApiPost): Post => {
   const publishedAt = post.published_date ? new Date(post.published_date) : null
@@ -119,7 +137,7 @@ const mapApiPost = (post: ApiPost): Post => {
     readTime: post.read_time ?? 1,
     likes: post.likes ?? 0,
     views: post.views ?? 0,
-    comments: post.comments ?? [],
+    comments: post.comments?.map(mapApiComment) ?? [],
     shares: post.shares ?? 0,
     trendingScore: post.trending_score ?? 0,
     isLiked: post.is_liked ?? false,
@@ -840,15 +858,16 @@ const addReplyToComments = (
     }
   })
 
-const addLikeToComment = (comments: CommentNode[], commentId: string): CommentNode[] =>
+const toggleCommentLike = (comments: CommentNode[], commentId: string): CommentNode[] =>
   comments.map((comment) => {
     if (comment.id === commentId) {
-      return { ...comment, likes: comment.likes + 1 }
+      const isLiked = !comment.isLiked
+      return { ...comment, likes: Math.max(0, comment.likes + (isLiked ? 1 : -1)), isLiked }
     }
 
     return {
       ...comment,
-      replies: addLikeToComment(comment.replies, commentId),
+      replies: toggleCommentLike(comment.replies, commentId),
     }
   })
 
@@ -859,9 +878,19 @@ const countComments = (comments: CommentNode[]): number =>
   )
 
 function App() {
-  const [authMode, setAuthMode] = useState<'login' | 'signup' | null>('login')
+  const [resetToken, setResetToken] = useState(() =>
+    new URLSearchParams(window.location.hash.slice(1)).get('resetToken')
+    ?? new URLSearchParams(window.location.search).get('resetToken')
+    ?? '',
+  )
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'reset' | null>(
+    resetToken ? 'reset' : getAuthToken() ? null : 'login',
+  )
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' })
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState('')
+  const [rememberMe, setRememberMe] = useState(false)
   const [authError, setAuthError] = useState('')
+  const [authSuccess, setAuthSuccess] = useState('')
   const [authSubmitting, setAuthSubmitting] = useState(false)
   const [googleAuthReady, setGoogleAuthReady] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
@@ -873,7 +902,7 @@ function App() {
     setAuthSubmitting(true)
     setAuthError('')
     try {
-      const result = await apiRequest<{
+      const result = await legacyApiRequest<{
         access_token: string
         user: {
           name: string
@@ -887,7 +916,7 @@ function App() {
         method: 'POST',
         body: JSON.stringify({ credential }),
       })
-      setAuthToken(result.access_token)
+      setAuthToken(result.access_token, rememberMe)
       setCurrentUser((current) => ({
         ...current,
         name: result.user.name,
@@ -907,10 +936,46 @@ function App() {
     } finally {
       setAuthSubmitting(false)
     }
-  }, [])
+  }, [rememberMe])
 
   useEffect(() => {
-    if (authMode === null || !googleClientId || !googleButtonRef.current) return
+    if (resetToken) return
+    const token = getAuthToken()
+    if (!token) return
+    let cancelled = false
+    void apiRequest<{
+      name: string
+      username: string
+      email: string
+      bio: string
+      followers?: number
+      following?: number
+    }>('/auth/me')
+      .then((user) => {
+        if (cancelled) return
+        setCurrentUser((current) => ({
+          ...current,
+          name: user.name,
+          username: user.username.startsWith('@') ? user.username : `@${user.username}`,
+          email: user.email,
+          bio: user.bio ?? '',
+          followers: Number(user.followers ?? current.followers),
+          following: Number(user.following ?? current.following),
+        }))
+        setAuthMode(null)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setAuthToken(null)
+        setAuthMode('login')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [resetToken])
+
+  useEffect(() => {
+    if (authMode === null || authMode === 'reset' || !googleClientId || !googleButtonRef.current) return
 
     let cancelled = false
     const renderGoogleButton = () => {
@@ -992,6 +1057,7 @@ function App() {
   const [profileEditing, setProfileEditing] = useState(false)
   const [profileSaving, setProfileSaving] = useState(false)
   const [profileSaveError, setProfileSaveError] = useState('')
+  const [actionError, setActionError] = useState('')
   const [profileDraft, setProfileDraft] = useState(initialUser)
   const [showBackToTop, setShowBackToTop] = useState(false)
   const articleDetailRef = useRef<HTMLElement>(null)
@@ -1004,7 +1070,7 @@ function App() {
     const loadBackendPosts = async () => {
       setPostLoadStatus('loading')
       try {
-        const response = await apiRequest<ApiPost[]>('/posts')
+        const response = await legacyApiRequest<ApiPost[]>('/posts')
         if (cancelled) return
         const loadedPosts = response.map(mapApiPost)
         setPosts(loadedPosts)
@@ -1093,8 +1159,9 @@ function App() {
     })
   }
 
-  const submitPost = (event: FormEvent<HTMLFormElement>) => {
+  const submitPost = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    setActionError('')
 
     const normalizedTags = draft.tags
       .split(',')
@@ -1104,66 +1171,58 @@ function App() {
     const content = draft.content.trim() || '# Untitled post\n\nAdd some writing here.'
     const timestamp = new Date().toISOString()
 
-    if (editingPostId) {
-      const updatedPost = {
-        title: draft.title.trim() || 'Untitled post',
-        excerpt: draft.excerpt.trim() || 'A new editorial update.',
-        tags: normalizedTags.length ? normalizedTags : ['Editorial'],
-        content,
-        readTime: Math.max(2, Math.round(content.split(/\s+/).length / 220)),
-        publishedDate: new Date(timestamp).toLocaleDateString('en-US', {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        }),
-      }
-      setPosts((currentPosts) =>
-        currentPosts.map((post) =>
-          post.id === editingPostId
-            ? { ...post, ...updatedPost }
-            : post,
-        ),
-      )
-      void apiRequest(`/posts/${editingPostId}`, {
-        method: 'PUT',
-        body: JSON.stringify(updatedPost),
-      })
-    } else {
-      const newPost: Post = {
-        id: `post-${Date.now()}`,
-        title: draft.title.trim() || 'Untitled post',
-        excerpt: draft.excerpt.trim() || 'A new editorial update.',
-        content,
-        author: currentUser.name,
-        authorHandle: currentUser.username,
-        avatar: getUserInitials(currentUser.name),
-        tags: normalizedTags.length ? normalizedTags : ['Editorial'],
-        publishedDate: new Date(timestamp).toLocaleDateString('en-US', {
-          month: 'short',
-          day: 'numeric',
-          year: 'numeric',
-        }),
-        readTime: Math.max(2, Math.round(content.split(/\s+/).length / 220)),
-        likes: 0,
-        views: 0,
-        comments: [],
-        shares: 0,
-        trendingScore: 0,
-        isBookmarked: false,
-        isFollowed: false,
-      }
-
-      setPosts((currentPosts) => [newPost, ...currentPosts])
-      setActivePostId(newPost.id)
-      void apiRequest<Post>('/posts', {
-        method: 'POST',
-        body: JSON.stringify(newPost),
-      })
+    const postFields = {
+      title: draft.title.trim() || 'Untitled post',
+      excerpt: draft.excerpt.trim() || 'A new editorial update.',
+      tags: normalizedTags.length ? normalizedTags : ['Editorial'],
+      content,
+      readTime: Math.max(2, Math.round(content.split(/\s+/).length / 220)),
+      publishedDate: new Date(timestamp).toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      }),
     }
 
-    setComposerOpen(false)
-    setEditingPostId(null)
-    setDraft(defaultDraft)
+    try {
+      if (editingPostId) {
+        await apiRequest(`/posts/${editingPostId}`, {
+          method: 'PUT',
+          body: JSON.stringify(postFields),
+        })
+        setPosts((currentPosts) => currentPosts.map((post) =>
+          post.id === editingPostId ? { ...post, ...postFields } : post,
+        ))
+      } else {
+        const id = `post-${crypto.randomUUID()}`
+        await apiRequest<{ success: boolean; data: { id: string } }>('/posts', {
+          method: 'POST',
+          body: JSON.stringify({ ...postFields, id }),
+        })
+        const newPost: Post = {
+          ...postFields,
+          id,
+          author: currentUser.name,
+          authorHandle: currentUser.username,
+          avatar: getUserInitials(currentUser.name),
+          likes: 0,
+          views: 0,
+          comments: [],
+          shares: 0,
+          trendingScore: 0,
+          isLiked: false,
+          isBookmarked: false,
+          isFollowed: false,
+        }
+        setPosts((currentPosts) => [newPost, ...currentPosts])
+        setActivePostId(newPost.id)
+      }
+      setComposerOpen(false)
+      setEditingPostId(null)
+      setDraft(defaultDraft)
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not save this post.')
+    }
   }
 
   const updateDraft = (field: keyof typeof defaultDraft, value: string) => {
@@ -1201,8 +1260,8 @@ function App() {
       setCurrentUser(updatedUser)
       setProfileDraft(updatedUser)
       setProfileEditing(false)
-    } catch {
-      setProfileSaveError('Your profile could not be saved. Please try again.')
+    } catch (error) {
+      setProfileSaveError(error instanceof Error ? error.message : 'Your profile could not be saved. Please try again.')
     } finally {
       setProfileSaving(false)
     }
@@ -1212,6 +1271,7 @@ function App() {
     const post = posts.find((item) => item.id === postId)
     if (!post) return
 
+    setActionError('')
     const nextLiked = !post.isLiked
     const nextCount = Math.max(0, post.likes + (nextLiked ? 1 : -1))
 
@@ -1225,7 +1285,7 @@ function App() {
 
     void apiRequest<{ success: boolean; data: { liked: boolean } }>(`/posts/${postId}/like`, {
       method: nextLiked ? 'POST' : 'DELETE',
-    }).catch(() => {
+    }).catch((error: unknown) => {
       setPosts((currentPosts) =>
         currentPosts.map((item) =>
           item.id === postId
@@ -1233,101 +1293,131 @@ function App() {
             : item,
         ),
       )
+      setActionError(error instanceof Error ? error.message : 'Could not update this like.')
     })
   }
 
   const toggleBookmark = (postId: string) => {
+    const post = posts.find((item) => item.id === postId)
+    if (!post) return
+    setActionError('')
     setPosts((currentPosts) =>
       currentPosts.map((post) =>
         post.id === postId ? { ...post, isBookmarked: !post.isBookmarked } : post,
       ),
     )
-    void apiRequest(`/posts/${postId}/bookmark`, { method: 'POST' })
+    void apiRequest<{ success: boolean; data: { bookmarked: boolean } }>(`/posts/${postId}/bookmark`, { method: 'POST' })
+      .then(({ data }) => {
+        setPosts((currentPosts) => currentPosts.map((item) => item.id === postId ? { ...item, isBookmarked: data.bookmarked } : item))
+      })
+      .catch((error: unknown) => {
+        setPosts((currentPosts) => currentPosts.map((item) => item.id === postId ? { ...item, isBookmarked: post.isBookmarked } : item))
+        setActionError(error instanceof Error ? error.message : 'Could not update bookmark.')
+      })
   }
 
   const toggleFollow = (postId: string) => {
+    const post = posts.find((item) => item.id === postId)
+    if (!post) return
+    setActionError('')
     setPosts((currentPosts) =>
       currentPosts.map((post) =>
         post.id === postId ? { ...post, isFollowed: !post.isFollowed } : post,
       ),
     )
-    void apiRequest(`/posts/${postId}/follow`, { method: 'POST' })
+    void apiRequest<{ success: boolean; data: { following: boolean } }>(`/posts/${postId}/follow`, { method: 'POST' })
+      .then(({ data }) => {
+        setPosts((currentPosts) => currentPosts.map((item) => item.id === postId ? { ...item, isFollowed: data.following } : item))
+      })
+      .catch((error: unknown) => {
+        setPosts((currentPosts) => currentPosts.map((item) => item.id === postId ? { ...item, isFollowed: post.isFollowed } : item))
+        setActionError(error instanceof Error ? error.message : 'Could not update follow status.')
+      })
   }
 
   const handleShare = async (postId: string) => {
     const post = posts.find((item) => item.id === postId)
     if (!post) return
 
-    const shareText = `Read "${post.title}" on PulseBlog — ${post.author}`
+    const shareText = `Read "${post.title}" on DraftFlow — ${post.author}\n${window.location.href}`
 
     try {
-      await navigator.clipboard.writeText(shareText)
-      setPosts((currentPosts) =>
-        currentPosts.map((item) =>
-          item.id === postId ? { ...item, shares: item.shares + 1 } : item,
-        ),
-      )
-    } catch {
-      setPosts((currentPosts) =>
-        currentPosts.map((item) =>
-          item.id === postId ? { ...item, shares: item.shares + 1 } : item,
-        ),
-      )
+      if (navigator.share) {
+        await navigator.share({ title: post.title, text: shareText, url: window.location.href })
+      } else {
+        await navigator.clipboard.writeText(shareText)
+      }
+      const result = await apiRequest<{ success: boolean; data: { shares: number } }>(`/posts/${postId}/share`, { method: 'POST' })
+      setPosts((currentPosts) => currentPosts.map((item) => item.id === postId ? { ...item, shares: result.data.shares } : item))
+      setActionError('')
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return
+      setActionError(error instanceof Error ? error.message : 'Could not share this post.')
     }
-    void apiRequest(`/posts/${postId}/share`, { method: 'POST' })
   }
 
-  const onCommentSubmit = (postId: string, parentId?: string) => {
+  const onCommentSubmit = async (postId: string, parentId?: string) => {
     const key = parentId ?? postId
     const replyText = (commentDrafts[key] ?? '').trim()
     if (!replyText) return
 
-    const newComment: CommentNode = {
-      id: `comment-${Date.now()}`,
-              author: currentUser.name,
-              avatar: getUserInitials(currentUser.name),
-      content: replyText,
-      likes: 0,
-      time: 'just now',
-      replies: [],
-    }
-
-    setPosts((currentPosts) =>
-      currentPosts.map((post) => {
-        if (post.id !== postId) return post
-        if (!parentId) {
-          return { ...post, comments: [...post.comments, newComment] }
-        }
-
-        return {
-          ...post,
-          comments: addReplyToComments(post.comments, parentId, newComment),
-        }
-      }),
-    )
-    void apiRequest<Post>(`/posts/${postId}/comments`, {
-      method: 'POST',
-      body: JSON.stringify({
-        parentId,
+    setActionError('')
+    try {
+      const result = await apiRequest<{ success: boolean; data: { id: string } }>(`/posts/${postId}/comments`, {
+        method: 'POST',
+        body: JSON.stringify({ parentId, content: replyText }),
+      })
+      const newComment: CommentNode = {
+        id: result.data.id,
         author: currentUser.name,
         avatar: getUserInitials(currentUser.name),
         content: replyText,
-      }),
-    })
-
-    setCommentDrafts((current) => ({ ...current, [key]: '' }))
-    setReplyState((current) => ({ ...current, [key]: null }))
+        likes: 0,
+        isLiked: false,
+        time: 'just now',
+        replies: [],
+      }
+      setPosts((currentPosts) => currentPosts.map((post) => {
+        if (post.id !== postId) return post
+        if (!parentId) return { ...post, comments: [...post.comments, newComment] }
+        return { ...post, comments: addReplyToComments(post.comments, parentId, newComment) }
+      }))
+      setCommentDrafts((current) => ({ ...current, [key]: '' }))
+      setReplyState((current) => ({ ...current, [key]: null }))
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not save this comment.')
+    }
   }
 
   const likeComment = (postId: string, commentId: string) => {
+    setActionError('')
     setPosts((currentPosts) =>
       currentPosts.map((post) =>
         post.id === postId
-          ? { ...post, comments: addLikeToComment(post.comments, commentId) }
+          ? { ...post, comments: toggleCommentLike(post.comments, commentId) }
           : post,
       ),
     )
-    void apiRequest(`/comments/${commentId}/like`, { method: 'POST' })
+    void apiRequest<{ success: boolean; data: { liked: boolean } }>(`/comments/${commentId}/like`, { method: 'POST' })
+      .then(({ data }) => {
+        setPosts((currentPosts) => currentPosts.map((post) => {
+          if (post.id !== postId) return post
+          const syncLiked = (comments: CommentNode[]): CommentNode[] => comments.map((comment) => {
+            if (comment.id === commentId) {
+              const delta = Number(data.liked) - Number(Boolean(comment.isLiked))
+              return { ...comment, isLiked: data.liked, likes: Math.max(0, comment.likes + delta) }
+            }
+            return { ...comment, replies: syncLiked(comment.replies) }
+          })
+          return { ...post, comments: syncLiked(post.comments) }
+        }))
+      })
+      .catch((error: unknown) => {
+        setPosts((currentPosts) => currentPosts.map((post) =>
+          post.id === postId ? { ...post, comments: toggleCommentLike(post.comments, commentId) } : post,
+        ))
+        setActionError(error instanceof Error ? error.message : 'Could not update comment like.')
+      })
   }
 
   const renderComment = (comment: CommentNode, depth = 0): React.ReactNode => (
@@ -1383,23 +1473,83 @@ function App() {
   }
 
   const deletePost = (postId: string) => {
-    setPosts((currentPosts) => currentPosts.filter((post) => post.id !== postId))
-    if (activePostId === postId && posts.length > 1) {
-      const remaining = posts.filter((post) => post.id !== postId)
-      setActivePostId(remaining[0]?.id ?? '')
-    }
+    setActionError('')
     void apiRequest(`/posts/${postId}`, { method: 'DELETE' })
+      .then(() => {
+        setPosts((currentPosts) => currentPosts.filter((post) => post.id !== postId))
+        if (activePostId === postId && posts.length > 1) {
+          const remaining = posts.filter((post) => post.id !== postId)
+          setActivePostId(remaining[0]?.id ?? '')
+        }
+      })
+      .catch((error: unknown) => {
+        setActionError(error instanceof Error ? error.message : 'Could not delete this post.')
+      })
   }
 
   const updateAuthForm = (field: keyof typeof authForm, value: string) => {
     setAuthForm((current) => ({ ...current, [field]: value }))
     setAuthError('')
+    setAuthSuccess('')
+  }
+
+  const requestPasswordReset = async () => {
+    if (!authForm.email.trim()) {
+      setAuthError('Enter your email address first.')
+      return
+    }
+    setAuthSubmitting(true)
+    setAuthError('')
+    setAuthSuccess('')
+    try {
+      const result = await legacyApiRequest<{ message: string }>('/auth/password/forgot', {
+        method: 'POST',
+        body: JSON.stringify({ email: authForm.email.trim() }),
+      })
+      setAuthSuccess(result.message)
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : 'Password reset could not be requested.')
+    } finally {
+      setAuthSubmitting(false)
+    }
   }
 
   const submitAuth = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
     if (authMode === null) return
+
+    if (authMode === 'reset') {
+      if (!resetToken) {
+        setAuthError('This password reset link is invalid or expired.')
+        return
+      }
+      if (authForm.password.length < 8 || authForm.password !== resetPasswordConfirm) {
+        setAuthError(authForm.password.length < 8 ? 'Password must be at least 8 characters.' : 'Passwords do not match.')
+        return
+      }
+      setAuthSubmitting(true)
+      setAuthError('')
+      setAuthSuccess('')
+      try {
+        const result = await legacyApiRequest<{ message: string }>('/auth/password/reset', {
+          method: 'POST',
+          body: JSON.stringify({ token: resetToken, password: authForm.password }),
+        })
+        setAuthSuccess(result.message)
+        setAuthError('')
+        setAuthMode('login')
+        setResetToken('')
+        setResetPasswordConfirm('')
+        setAuthForm((form) => ({ ...form, password: '' }))
+        window.history.replaceState({}, '', window.location.pathname)
+      } catch (error) {
+        setAuthError(error instanceof Error ? error.message : 'Password reset could not be completed.')
+      } finally {
+        setAuthSubmitting(false)
+      }
+      return
+    }
 
     if (!authForm.email.trim() || !authForm.password.trim() || (authMode === 'signup' && !authForm.name.trim())) {
       setAuthError('Please complete all required fields.')
@@ -1415,7 +1565,7 @@ function App() {
     setAuthSubmitting(true)
     setAuthError('')
     try {
-      const result = await apiRequest<{
+      const result = await legacyApiRequest<{
         access_token: string
         user: {
           name: string
@@ -1434,7 +1584,7 @@ function App() {
           password: authForm.password,
         }),
       })
-      setAuthToken(result.access_token)
+      setAuthToken(result.access_token, rememberMe)
       setCurrentUser((current) => ({
         ...current,
         name: result.user.name,
@@ -1496,23 +1646,27 @@ function App() {
 
           <section className="auth-card">
             <div className="auth-card-header">
-              <span className="auth-card-label">{authMode === 'login' ? 'Welcome back' : 'Start writing'}</span>
-              <h2>{authMode === 'login' ? 'Sign in to DraftFlow' : 'Create your account'}</h2>
-              <p>{authMode === 'login' ? 'Pick up where your ideas left off.' : 'Your next great story starts with a blank page.'}</p>
+              <span className="auth-card-label">{authMode === 'login' ? 'Welcome back' : authMode === 'reset' ? 'Account recovery' : 'Start writing'}</span>
+              <h2>{authMode === 'login' ? 'Sign in to DraftFlow' : authMode === 'reset' ? 'Choose a new password' : 'Create your account'}</h2>
+              <p>{authMode === 'login' ? 'Pick up where your ideas left off.' : authMode === 'reset' ? 'Use a strong password you have not used before.' : 'Your next great story starts with a blank page.'}</p>
             </div>
 
-            <div className="auth-tabs" role="tablist" aria-label="Authentication options">
-              <button type="button" className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>Sign in</button>
-              <button type="button" className={authMode === 'signup' ? 'active' : ''} onClick={() => setAuthMode('signup')}>Sign up</button>
-            </div>
+            {authMode !== 'reset' && (
+              <div className="auth-tabs" role="tablist" aria-label="Authentication options">
+                <button type="button" className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>Sign in</button>
+                <button type="button" className={authMode === 'signup' ? 'active' : ''} onClick={() => setAuthMode('signup')}>Sign up</button>
+              </div>
+            )}
 
             <form className="auth-form" onSubmit={submitAuth}>
               {authMode === 'signup' && (
                 <label><span>Your name</span><input autoFocus required value={authForm.name} onChange={(event) => updateAuthForm('name', event.target.value)} placeholder="Ava Rodriguez" /></label>
               )}
-              <label><span>Email address</span><input type="email" required value={authForm.email} onChange={(event) => updateAuthForm('email', event.target.value)} placeholder="you@example.com" /></label>
+              {authMode !== 'reset' && (
+                <label><span>Email address</span><input type="email" required value={authForm.email} onChange={(event) => updateAuthForm('email', event.target.value)} placeholder="you@example.com" /></label>
+              )}
               <label className="password-field">
-                <span>Password</span>
+                <span>{authMode === 'reset' ? 'New password' : 'Password'}</span>
                 <div className="password-input-wrap">
                   <input
                     type={showPassword ? 'text' : 'password'}
@@ -1538,16 +1692,32 @@ function App() {
                   </div>
                 )}
               </label>
-              <div className="auth-form-meta">
-                <label className="check-label"><input type="checkbox" /> <span>Remember me</span></label>
-                {authMode === 'login' && <button type="button" className="auth-link">Forgot password?</button>}
-              </div>
+              {authMode === 'reset' && (
+                <label className="password-field">
+                  <span>Confirm new password</span>
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    minLength={8}
+                    value={resetPasswordConfirm}
+                    onChange={(event) => setResetPasswordConfirm(event.target.value)}
+                    placeholder="••••••••"
+                  />
+                </label>
+              )}
+              {authMode === 'login' && (
+                <div className="auth-form-meta">
+                  <label className="check-label"><input type="checkbox" checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} /> <span>Remember me</span></label>
+                  <button type="button" className="auth-link" onClick={() => void requestPasswordReset()} disabled={authSubmitting}>Forgot password?</button>
+                </div>
+              )}
               {authError && <p className="auth-error" role="alert">{authError}</p>}
-              <button type="submit" className="auth-submit" disabled={authSubmitting}>{authSubmitting ? 'Checking...' : authMode === 'login' ? 'Sign in' : 'Create account'} <span>→</span></button>
+              {authSuccess && <p className="auth-success" role="status">{authSuccess}</p>}
+              <button type="submit" className="auth-submit" disabled={authSubmitting}>{authSubmitting ? 'Checking...' : authMode === 'login' ? 'Sign in' : authMode === 'reset' ? 'Save new password' : 'Create account'} <span>→</span></button>
             </form>
 
-            <div className="auth-divider"><span>or continue with</span></div>
-            <div className="social-buttons">
+            {authMode !== 'reset' && <div className="auth-divider"><span>or continue with</span></div>}
+            {authMode !== 'reset' && <div className="social-buttons">
               {!googleAuthReady && (
                 <button
                   type="button"
@@ -1565,8 +1735,8 @@ function App() {
                 </button>
               )}
               <div ref={googleButtonRef} className="google-button-container" />
-            </div>
-            <p className="auth-switch">{authMode === 'login' ? 'New to DraftFlow?' : 'Already have an account?'} <button type="button" className="auth-link" onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}>{authMode === 'login' ? 'Create an account' : 'Sign in'}</button></p>
+            </div>}
+            <p className="auth-switch">{authMode === 'reset' ? 'Remembered your password?' : authMode === 'login' ? 'New to DraftFlow?' : 'Already have an account?'} <button type="button" className="auth-link" onClick={() => { setAuthMode(authMode === 'signup' || authMode === 'reset' ? 'login' : 'signup'); setAuthError(''); setAuthSuccess('') }}>{authMode === 'login' ? 'Create an account' : 'Sign in'}</button></p>
           </section>
         </section>
       </main>
@@ -1630,6 +1800,13 @@ function App() {
           </button>
         </div>
       </header>
+
+      {actionError && (
+        <div className="action-error" role="alert">
+          <span>{actionError}</span>
+          <button type="button" aria-label="Dismiss error" onClick={() => setActionError('')}>×</button>
+        </div>
+      )}
 
       {profileOpen && (
         <section className="user-profile-page">

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
-import json
 import re
 import secrets
+import uuid
+import hashlib
+import smtplib
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from typing import Annotated, Any, Literal
+from urllib.parse import urlencode
 
+import jwt
 from google.auth.exceptions import TransportError
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
@@ -20,14 +23,15 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.security import create_access_token, decode_token
 from app.core.security import hash_password as hash_secure_password
 from app.core.security import verify_password as verify_secure_password
 
 from .api.routes.admin import router as admin_router
 from .api.routes.auth import router as auth_router
-from .config import APP_NAME, JWT_SECRET
+from .config import APP_NAME
 from .database import a_engine, get_db
-from .models import Comment, CommentLike, Follow, FollowRequest, Post, PostLike, User, UserBlock
+from .models import Comment, CommentLike, Follow, FollowRequest, PasswordResetToken, Post, PostBookmark, PostLike, User, UserBlock
 from .services.authorization import PrivacyPolicy
 
 app = FastAPI(title=APP_NAME)
@@ -53,33 +57,24 @@ class GoogleAuthRequest(BaseModel):
     credential: str = Field(min_length=1)
 
 
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
 
 
-def verify_password(raw: str, password_hash: str) -> bool:
-    return hash_password(raw) == password_hash
+class PasswordResetCompletion(BaseModel):
+    token: str = Field(min_length=20)
+    password: str = Field(min_length=8, max_length=256)
 
 
-def encode_jwt(user_id: int) -> str:
-    payload = json.dumps({"sub": user_id, "exp": (datetime.now(timezone.utc) + timedelta(days=7)).timestamp()}, separators=(",", ":")).encode()
-    sig = hmac.new(JWT_SECRET.encode(), payload, hashlib.sha256).digest()
-    return f"{payload.hex()}.{sig.hex()}"
+def encode_jwt(user_id: int, role: str = "user") -> str:
+    return create_access_token(user_id, role)
 
 
 def decode_jwt(token: str) -> dict[str, Any]:
     try:
-        payload_hex, sig_hex = token.split(".", 1)
-    except ValueError as exc:  # pragma: no cover
-        raise HTTPException(status_code=401, detail="Invalid token") from exc
-    expected = hmac.new(JWT_SECRET.encode(), bytes.fromhex(payload_hex), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, sig_hex):
-        raise HTTPException(status_code=401, detail="Invalid token")
-    payload = json.loads(bytes.fromhex(payload_hex))
-    exp = float(payload.get("exp", 0))
-    if exp < datetime.now(timezone.utc).timestamp():
-        raise HTTPException(status_code=401, detail="Token expired")
-    return payload
+        return decode_token(token, "access")
+    except (jwt.InvalidTokenError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from exc
 
 
 def verify_google_credential(credential: str, client_id: str) -> dict[str, Any]:
@@ -95,6 +90,33 @@ def verify_google_credential(credential: str, client_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="Google sign-in verification is temporarily unavailable") from exc
 
 
+def send_password_reset_email(recipient: str, token: str) -> None:
+    if not settings.smtp_host or not settings.smtp_from_email or not settings.frontend_url:
+        raise HTTPException(status_code=503, detail="Password reset email is not configured")
+    reset_url = f"{settings.frontend_url.rstrip('/')}/#{urlencode({'resetToken': token})}"
+    message = EmailMessage()
+    message["Subject"] = f"Reset your {APP_NAME} password"
+    message["From"] = settings.smtp_from_email
+    message["To"] = recipient
+    message.set_content(
+        f"Use this link to reset your password. It expires in 30 minutes:\n\n{reset_url}\n\n"
+        "If you did not request a password reset, you can ignore this email."
+    )
+    if settings.smtp_port == 465:
+        with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=10) as server:
+            if settings.smtp_username:
+                server.login(settings.smtp_username, settings.smtp_password or "")
+            server.send_message(message)
+    else:
+        with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=10) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            if settings.smtp_username:
+                server.login(settings.smtp_username, settings.smtp_password or "")
+            server.send_message(message)
+
+
 async def get_auth_user(
     db: Session = Depends(get_db),
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
@@ -103,7 +125,10 @@ async def get_auth_user(
         raise HTTPException(status_code=401, detail="Authentication required")
     token = authorization.split(" ", 1)[1]
     payload = decode_jwt(token)
-    user = db.get(User, payload.get("sub"))
+    subject = payload.get("sub")
+    if not isinstance(subject, (str, int)) or not str(subject).isdigit():
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    user = db.get(User, int(subject))
     if user is None or not user.is_active:
         raise HTTPException(status_code=401, detail="User not found or inactive")
     return user
@@ -137,7 +162,7 @@ def authenticate(payload: AuthRequest, db: Session = Depends(get_db)) -> dict[st
     email_value = str(payload.email).strip().lower()
     user_columns = {column["name"] for column in inspect(db.get_bind()).get_columns("users")}
     selected_columns = ["id", "name", "username", "email", "password_hash"]
-    selected_columns.extend(column for column in ("bio", "followers", "following") if column in user_columns)
+    selected_columns.extend(column for column in ("bio", "followers", "following", "is_active", "role") if column in user_columns)
     user = db.execute(
         text(f"SELECT {', '.join(selected_columns)} FROM users WHERE LOWER(email) = :email"),
         {"email": email_value},
@@ -146,23 +171,12 @@ def authenticate(payload: AuthRequest, db: Session = Depends(get_db)) -> dict[st
     if payload.mode == "login":
         if user is None:
             raise HTTPException(status_code=401, detail="Email or password is incorrect. Check both and try again.")
+        if user.get("is_active") is False:
+            raise HTTPException(status_code=401, detail="This account is inactive")
 
         stored_hash = str(user["password_hash"])
-        is_legacy_hash = len(stored_hash) == 64 and all(character in "0123456789abcdefABCDEF" for character in stored_hash)
-        password_matches = (
-            hmac.compare_digest(hash_password(payload.password), stored_hash)
-            if is_legacy_hash
-            else verify_secure_password(payload.password, stored_hash)
-        )
-        if not password_matches:
+        if not verify_secure_password(payload.password, stored_hash):
             raise HTTPException(status_code=401, detail="Email or password is incorrect. Check both and try again.")
-
-        if is_legacy_hash:
-            db.execute(
-                text("UPDATE users SET password_hash = :password_hash WHERE id = :user_id"),
-                {"password_hash": hash_secure_password(payload.password), "user_id": user["id"]},
-            )
-            db.commit()
     else:
         if user is not None:
             raise HTTPException(status_code=409, detail="An account with this email already exists. Please sign in.")
@@ -204,7 +218,7 @@ def authenticate(payload: AuthRequest, db: Session = Depends(get_db)) -> dict[st
         }
 
     return {
-        "access_token": encode_jwt(int(user["id"])),
+        "access_token": encode_jwt(int(user["id"]), str(user.get("role") or "user")),
         "token_type": "bearer",
         "user": {
             "id": user["id"],
@@ -280,7 +294,7 @@ def authenticate_google(payload: GoogleAuthRequest, db: Session = Depends(get_db
         }
 
     return {
-        "access_token": encode_jwt(int(user["id"])),
+        "access_token": encode_jwt(int(user["id"]), str(user.get("role") or "user")),
         "token_type": "bearer",
         "user": {
             "id": user["id"],
@@ -292,6 +306,75 @@ def authenticate_google(payload: GoogleAuthRequest, db: Session = Depends(get_db
             "following": user.get("following") or 0,
         },
     }
+
+
+@app.post("/api/auth/password/forgot")
+def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(get_db)) -> dict[str, str]:
+    if not settings.smtp_host or not settings.smtp_from_email or not settings.frontend_url:
+        raise HTTPException(status_code=503, detail="Password reset email is not configured")
+    email = str(payload.email).strip().lower()
+    user = db.execute(select(User).where(func.lower(User.email) == email)).scalar_one_or_none()
+    if user is not None and user.is_active:
+        now = datetime.now(timezone.utc)
+        previous_tokens = db.execute(
+            select(PasswordResetToken).where(
+                PasswordResetToken.user_id == user.id,
+                PasswordResetToken.used_at.is_(None),
+            )
+        ).scalars().all()
+        for previous in previous_tokens:
+            previous.used_at = now
+        raw_token = secrets.token_urlsafe(32)
+        reset_token = PasswordResetToken(
+            user_id=user.id,
+            token_hash=hashlib.sha256(raw_token.encode("utf-8")).hexdigest(),
+            expires_at=now + timedelta(minutes=30),
+        )
+        db.add(reset_token)
+        db.commit()
+        try:
+            send_password_reset_email(user.email, raw_token)
+        except (OSError, smtplib.SMTPException) as exc:
+            reset_token.used_at = datetime.now(timezone.utc)
+            db.commit()
+            raise HTTPException(status_code=503, detail="Password reset email could not be sent") from exc
+    return {"message": "If an active account exists for that email, reset instructions have been sent."}
+
+
+@app.post("/api/auth/password/reset")
+def complete_password_reset(payload: PasswordResetCompletion, db: Session = Depends(get_db)) -> dict[str, str]:
+    token_hash = hashlib.sha256(payload.token.encode("utf-8")).hexdigest()
+    reset_token = db.execute(
+        select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)
+    ).scalar_one_or_none()
+    now = datetime.now(timezone.utc)
+    expires_at = reset_token.expires_at if reset_token else None
+    if expires_at is not None and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if reset_token is None or reset_token.used_at is not None or expires_at is None or expires_at <= now:
+        raise HTTPException(status_code=400, detail="Password reset link is invalid or expired")
+    user = db.get(User, reset_token.user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=400, detail="Password reset link is invalid or expired")
+    user.password_hash = hash_secure_password(payload.password)
+    reset_token.used_at = now
+    for refresh_token in db.execute(
+        select(PasswordResetToken).where(
+            PasswordResetToken.user_id == user.id,
+            PasswordResetToken.used_at.is_(None),
+        )
+    ).scalars():
+        refresh_token.used_at = now
+    for refresh_token in db.execute(
+        text("SELECT id FROM refresh_tokens WHERE user_id = :user_id AND revoked_at IS NULL"),
+        {"user_id": user.id},
+    ).all():
+        db.execute(
+            text("UPDATE refresh_tokens SET revoked_at = :now WHERE id = :token_id"),
+            {"now": now, "token_id": refresh_token.id},
+        )
+    db.commit()
+    return {"message": "Password reset successfully. Please sign in with your new password."}
 
 
 @app.get("/api/profile")
@@ -587,7 +670,7 @@ def feed(db: Session = Depends(get_db), current_user: User = Depends(get_auth_us
 
 
 @app.get("/api/v1/posts")
-def list_posts(db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user), limit: int = Query(default=20, ge=1, le=100), cursor: int | None = None) -> dict[str, Any]:
+def list_posts(db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user), limit: int = Query(default=20, ge=1, le=100), cursor: str | None = None) -> dict[str, Any]:
     query = select(Post).where(Post.deleted_at.is_(None), Post.status == "published")
     if cursor is not None:
         query = query.where(Post.id < cursor)
@@ -610,38 +693,111 @@ def list_posts(db: Session = Depends(get_db), current_user: User | None = Depend
 
 
 @app.get("/api/posts")
-def legacy_posts(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
-    posts = db.execute(text("""
-        SELECT id, title, excerpt, content, author, author_handle, avatar, tags,
-               published_date, read_time, likes, views, shares, trending_score,
-               is_bookmarked, is_followed
-        FROM posts
-        ORDER BY created_at DESC
-        LIMIT 100
-    """)).mappings().all()
-    return [
-        {
-            "id": str(post["id"]),
-            "title": post["title"],
-            "excerpt": post["excerpt"] or post["content"][:160],
-            "content": post["content"],
-            "author": post["author"],
-            "author_handle": post["author_handle"],
-            "avatar": post["avatar"],
-            "tags": post["tags"] or [],
-            "published_date": post["published_date"] or "",
-            "read_time": post["read_time"] or 1,
-            "likes": post["likes"] or 0,
-            "views": post["views"] or 0,
-            "comments": [],
-            "shares": post["shares"] or 0,
-            "trending_score": post["trending_score"] or 0,
-            "is_liked": False,
-            "is_bookmarked": post["is_bookmarked"] or False,
-            "is_followed": post["is_followed"] or False,
-        }
+def legacy_posts(
+    db: Session = Depends(get_db),
+    current_user: User | None = Depends(get_optional_user),
+) -> list[dict[str, Any]]:
+    posts = db.execute(
+        select(Post)
+        .where(Post.deleted_at.is_(None), Post.status == "published")
+        .order_by(Post.created_at.desc())
+        .limit(100)
+    ).scalars().all()
+    visible_posts = [
+        post
         for post in posts
+        if PrivacyPolicy().can_view_post(
+            current_user,
+            post,
+            viewer_user_id=getattr(current_user, "id", None),
+            author_user_id=post.author_id,
+        )
     ]
+    post_ids = [post.id for post in visible_posts]
+    all_comments = (
+        db.execute(
+            select(Comment).where(Comment.post_id.in_(post_ids)).order_by(Comment.created_at.asc())
+        ).scalars().all()
+        if post_ids
+        else []
+    )
+    liked_comment_ids = set()
+    if current_user is not None and all_comments:
+        liked_comment_ids = set(
+            db.execute(
+                select(CommentLike.comment_id).where(
+                    CommentLike.user_id == current_user.id,
+                    CommentLike.comment_id.in_([comment.id for comment in all_comments]),
+                )
+            ).scalars().all()
+        )
+    comments_by_post: dict[str, list[Comment]] = {}
+    for comment in all_comments:
+        comments_by_post.setdefault(comment.post_id, []).append(comment)
+
+    result = []
+    for post in visible_posts:
+        comment_nodes: dict[str, dict[str, Any]] = {}
+        for comment in comments_by_post.get(post.id, []):
+            comment_nodes[comment.id] = {
+                "id": comment.id,
+                "author": comment.author,
+                "avatar": comment.avatar,
+                "content": comment.content,
+                "likes": comment.likes_count,
+                "is_liked": comment.id in liked_comment_ids,
+                "time": comment.created_at.isoformat(),
+                "replies": [],
+            }
+        roots = []
+        for comment in comments_by_post.get(post.id, []):
+            node = comment_nodes[comment.id]
+            if comment.parent_comment_id and comment.parent_comment_id in comment_nodes:
+                comment_nodes[comment.parent_comment_id]["replies"].append(node)
+            else:
+                roots.append(node)
+
+        liked = False
+        bookmarked = False
+        followed = False
+        if current_user is not None:
+            liked = db.execute(
+                select(PostLike.id).where(PostLike.post_id == post.id, PostLike.user_id == current_user.id)
+            ).scalar_one_or_none() is not None
+            bookmarked = db.execute(
+                select(PostBookmark.id).where(PostBookmark.post_id == post.id, PostBookmark.user_id == current_user.id)
+            ).scalar_one_or_none() is not None
+            if post.author_id is not None:
+                followed = db.execute(
+                    select(Follow.id).where(
+                        Follow.follower_id == current_user.id,
+                        Follow.following_id == post.author_id,
+                    )
+                ).scalar_one_or_none() is not None
+
+        result.append(
+            {
+                "id": post.id,
+                "title": post.title,
+                "excerpt": post.excerpt or post.content[:160],
+                "content": post.content,
+                "author": post.author_name,
+                "author_handle": post.author_handle,
+                "avatar": post.avatar,
+                "tags": post.tags or [],
+                "published_date": post.published_date or "",
+                "read_time": post.read_time or 1,
+                "likes": post.likes_count,
+                "views": post.views,
+                "comments": roots,
+                "shares": post.shares,
+                "trending_score": post.trending_score,
+                "is_liked": liked,
+                "is_bookmarked": bookmarked,
+                "is_followed": followed,
+            }
+        )
+    return result
 
 
 @app.post("/api/v1/posts")
@@ -653,11 +809,18 @@ def create_post(payload: dict[str, Any], current_user: User = Depends(get_auth_u
     if visibility not in {"public", "followers", "private"}:
         raise HTTPException(status_code=400, detail="Invalid visibility")
     post = Post(
+        id=str(payload.get("id") or uuid.uuid4()),
         author_id=current_user.id,
         title=title,
         slug=title.lower().replace(" ", "-")[:60],
         content=content,
         excerpt=str(excerpt),
+        author_name=current_user.name,
+        author_handle=f"@{current_user.username}",
+        avatar="".join(part[0] for part in current_user.name.split()[:2]).upper() or "U",
+        tags=payload.get("tags") if isinstance(payload.get("tags"), list) else [],
+        published_date=str(payload.get("publishedDate") or datetime.now(timezone.utc).date().isoformat()),
+        read_time=max(1, int(payload.get("readTime") or max(1, len(content.split()) // 200))),
         status=str(payload.get("status") or "published"),
         visibility=visibility,
         published_at=datetime.now(timezone.utc),
@@ -669,7 +832,7 @@ def create_post(payload: dict[str, Any], current_user: User = Depends(get_auth_u
 
 
 @app.get("/api/v1/posts/{post_id}")
-def get_post(post_id: int, db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
+def get_post(post_id: str, db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
     post = db.get(Post, post_id)
     if post is None or post.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -681,7 +844,7 @@ def get_post(post_id: int, db: Session = Depends(get_db), current_user: User | N
 
 
 @app.put("/api/v1/posts/{post_id}")
-def update_post(post_id: int, payload: dict[str, Any], current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def update_post(post_id: str, payload: dict[str, Any], current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     post = db.get(Post, post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -689,6 +852,17 @@ def update_post(post_id: int, payload: dict[str, Any], current_user: User = Depe
         raise HTTPException(status_code=403, detail="Not allowed to edit this post")
     post.title = str(payload.get("title") or post.title)
     post.content = str(payload.get("content") or post.content)
+    post.excerpt = str(payload.get("excerpt") or post.content[:160])
+    if isinstance(payload.get("tags"), list):
+        post.tags = payload["tags"]
+    if "readTime" in payload or "read_time" in payload:
+        try:
+            post.read_time = max(1, int(payload.get("readTime", payload.get("read_time"))))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="Read time must be a positive integer") from exc
+    published_date = payload.get("publishedDate", payload.get("published_date"))
+    if published_date:
+        post.published_date = str(published_date)
     if "visibility" in payload:
         value = str(payload["visibility"]).lower()
         if value in {"public", "followers", "private"}:
@@ -698,7 +872,7 @@ def update_post(post_id: int, payload: dict[str, Any], current_user: User = Depe
 
 
 @app.delete("/api/v1/posts/{post_id}")
-def delete_post(post_id: int, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def delete_post(post_id: str, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     post = db.get(Post, post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -710,7 +884,7 @@ def delete_post(post_id: int, current_user: User = Depends(get_auth_user), db: S
 
 
 @app.post("/api/v1/posts/{post_id}/like")
-def like_post(post_id: int, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def like_post(post_id: str, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     post = db.get(Post, post_id)
     if post is None or post.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -719,21 +893,25 @@ def like_post(post_id: int, current_user: User = Depends(get_auth_user), db: Ses
     existing = db.execute(select(PostLike.id).where(PostLike.post_id == post_id, PostLike.user_id == current_user.id)).scalar_one_or_none()
     if existing is None:
         db.add(PostLike(post_id=post_id, user_id=current_user.id))
+        post.likes_count += 1
         db.commit()
     return {"success": True, "data": {"liked": True}} 
 
 
 @app.delete("/api/v1/posts/{post_id}/like")
-def unlike_post(post_id: int, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def unlike_post(post_id: str, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    post = db.get(Post, post_id)
     existing = db.execute(select(PostLike).where(PostLike.post_id == post_id, PostLike.user_id == current_user.id)).scalar_one_or_none()
     if existing is not None:
         db.delete(existing)
+        if post is not None:
+            post.likes_count = max(0, post.likes_count - 1)
         db.commit()
     return {"success": True, "data": {"liked": False}}
 
 
 @app.get("/api/v1/posts/{post_id}/likes")
-def get_post_likes(post_id: int, db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
+def get_post_likes(post_id: str, db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
     post = db.get(Post, post_id)
     if post is None or post.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -744,8 +922,82 @@ def get_post_likes(post_id: int, db: Session = Depends(get_db), current_user: Us
     return {"id": post.id, "title": post.title, "like_count": like_count, "liked_by_current_user": liked_by_current_user}
 
 
+@app.post("/api/v1/posts/{post_id}/bookmark")
+def toggle_post_bookmark(
+    post_id: str,
+    current_user: User = Depends(get_auth_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    post = db.get(Post, post_id)
+    if post is None or post.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if not PrivacyPolicy().can_view_post(current_user, post, viewer_user_id=current_user.id, author_user_id=post.author_id):
+        raise HTTPException(status_code=403, detail="You cannot bookmark this post")
+    existing = db.execute(
+        select(PostBookmark).where(PostBookmark.post_id == post_id, PostBookmark.user_id == current_user.id)
+    ).scalar_one_or_none()
+    if existing is None:
+        db.add(PostBookmark(post_id=post_id, user_id=current_user.id))
+        bookmarked = True
+    else:
+        db.delete(existing)
+        bookmarked = False
+    db.commit()
+    return {"success": True, "data": {"bookmarked": bookmarked}}
+
+
+@app.post("/api/v1/posts/{post_id}/follow")
+def toggle_post_author_follow(
+    post_id: str,
+    current_user: User = Depends(get_auth_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    post = db.get(Post, post_id)
+    if post is None or post.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    author = post.author or db.execute(
+        select(User).where(User.username == post.author_handle.removeprefix("@"))
+    ).scalar_one_or_none()
+    if author is None:
+        raise HTTPException(status_code=409, detail="This author profile is not connected to an account")
+    if author.id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot follow yourself")
+    existing = db.execute(
+        select(Follow).where(Follow.follower_id == current_user.id, Follow.following_id == author.id)
+    ).scalar_one_or_none()
+    if existing is not None:
+        db.delete(existing)
+        following = False
+    else:
+        if author.profile_visibility == "private":
+            request = db.execute(
+                select(FollowRequest).where(
+                    FollowRequest.requester_id == current_user.id,
+                    FollowRequest.target_user_id == author.id,
+                )
+            ).scalar_one_or_none()
+            if request is None:
+                db.add(FollowRequest(requester_id=current_user.id, target_user_id=author.id))
+            db.commit()
+            return {"success": True, "data": {"following": False, "status": "pending"}}
+        db.add(Follow(follower_id=current_user.id, following_id=author.id))
+        following = True
+    db.commit()
+    return {"success": True, "data": {"following": following}}
+
+
+@app.post("/api/v1/posts/{post_id}/share")
+def share_post(post_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
+    post = db.get(Post, post_id)
+    if post is None or post.deleted_at is not None:
+        raise HTTPException(status_code=404, detail="Post not found")
+    post.shares += 1
+    db.commit()
+    return {"success": True, "data": {"shares": post.shares}}
+
+
 @app.post("/api/v1/posts/{post_id}/comments")
-def create_comment(post_id: int, payload: dict[str, Any], current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def create_comment(post_id: str, payload: dict[str, Any], current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     post = db.get(Post, post_id)
     if post is None:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -754,7 +1006,19 @@ def create_comment(post_id: int, payload: dict[str, Any], current_user: User = D
     content = str(payload.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="Comment content cannot be empty")
-    comment = Comment(post_id=post_id, user_id=current_user.id, parent_comment_id=payload.get("parent_comment_id"), content=content)
+    parent_id = payload.get("parentId") or payload.get("parent_comment_id")
+    if parent_id is not None:
+        parent = db.get(Comment, str(parent_id))
+        if parent is None or parent.post_id != post_id:
+            raise HTTPException(status_code=404, detail="Parent comment not found")
+    comment = Comment(
+        post_id=post_id,
+        user_id=current_user.id,
+        parent_comment_id=str(parent_id) if parent_id is not None else None,
+        author=current_user.name,
+        avatar="".join(part[0] for part in current_user.name.split()[:2]).upper() or "U",
+        content=content,
+    )
     db.add(comment)
     db.commit()
     db.refresh(comment)
@@ -762,18 +1026,48 @@ def create_comment(post_id: int, payload: dict[str, Any], current_user: User = D
 
 
 @app.get("/api/v1/posts/{post_id}/comments")
-def get_post_comments(post_id: int, db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
+def get_post_comments(post_id: str, db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
     post = db.get(Post, post_id)
     if post is None or post.deleted_at is not None:
         raise HTTPException(status_code=404, detail="Post not found")
-    if current_user is None or not PrivacyPolicy().can_view_post(current_user, post, viewer_user_id=current_user.id, author_user_id=post.author_id):
+    if not PrivacyPolicy().can_view_post(
+        current_user,
+        post,
+        viewer_user_id=getattr(current_user, "id", None),
+        author_user_id=post.author_id,
+    ):
         raise HTTPException(status_code=403, detail="You cannot view comments for this post")
-    comments = db.execute(select(Comment).where(Comment.post_id == post_id, Comment.parent_comment_id.is_(None)).order_by(Comment.created_at.asc())).scalars().all()
-    return {"success": True, "data": {"items": [{"id": c.id, "content": c.content, "user_id": c.user_id, "like_count": db.execute(select(func.count()).select_from(CommentLike).where(CommentLike.comment_id == c.id)).scalar_one() or 0} for c in comments]}}
+    comments = db.execute(select(Comment).where(Comment.post_id == post_id).order_by(Comment.created_at.asc())).scalars().all()
+    nodes = {
+        comment.id: {
+            "id": comment.id,
+            "content": comment.content,
+            "user_id": comment.user_id,
+            "author": comment.author,
+            "avatar": comment.avatar,
+            "like_count": comment.likes_count,
+            "is_liked": current_user is not None and db.execute(
+                select(CommentLike.id).where(
+                    CommentLike.comment_id == comment.id,
+                    CommentLike.user_id == current_user.id,
+                )
+            ).scalar_one_or_none() is not None,
+            "replies": [],
+        }
+        for comment in comments
+    }
+    roots = []
+    for comment in comments:
+        node = nodes[comment.id]
+        if comment.parent_comment_id and comment.parent_comment_id in nodes:
+            nodes[comment.parent_comment_id]["replies"].append(node)
+        else:
+            roots.append(node)
+    return {"success": True, "data": {"items": roots}}
 
 
 @app.post("/api/v1/comments/{comment_id}/replies")
-def create_reply(comment_id: int, payload: dict[str, Any], current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def create_reply(comment_id: str, payload: dict[str, Any], current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     parent = db.get(Comment, comment_id)
     if parent is None:
         raise HTTPException(status_code=404, detail="Comment not found")
@@ -783,7 +1077,14 @@ def create_reply(comment_id: int, payload: dict[str, Any], current_user: User = 
     content = str(payload.get("content") or "").strip()
     if not content:
         raise HTTPException(status_code=400, detail="Reply content cannot be empty")
-    reply = Comment(post_id=post.id, user_id=current_user.id, parent_comment_id=comment_id, content=content)
+    reply = Comment(
+        post_id=post.id,
+        user_id=current_user.id,
+        parent_comment_id=comment_id,
+        author=current_user.name,
+        avatar="".join(part[0] for part in current_user.name.split()[:2]).upper() or "U",
+        content=content,
+    )
     db.add(reply)
     db.commit()
     db.refresh(reply)
@@ -791,7 +1092,7 @@ def create_reply(comment_id: int, payload: dict[str, Any], current_user: User = 
 
 
 @app.get("/api/v1/comments/{comment_id}/replies")
-def get_replies(comment_id: int, db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
+def get_replies(comment_id: str, db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
     parent = db.get(Comment, comment_id)
     if parent is None:
         raise HTTPException(status_code=404, detail="Comment not found")
@@ -803,7 +1104,7 @@ def get_replies(comment_id: int, db: Session = Depends(get_db), current_user: Us
 
 
 @app.put("/api/v1/comments/{comment_id}")
-def update_comment(comment_id: int, payload: dict[str, Any], current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def update_comment(comment_id: str, payload: dict[str, Any], current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     comment = db.get(Comment, comment_id)
     if comment is None:
         raise HTTPException(status_code=404, detail="Comment not found")
@@ -818,7 +1119,7 @@ def update_comment(comment_id: int, payload: dict[str, Any], current_user: User 
 
 
 @app.delete("/api/v1/comments/{comment_id}")
-def delete_comment(comment_id: int, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def delete_comment(comment_id: str, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     comment = db.get(Comment, comment_id)
     if comment is None:
         raise HTTPException(status_code=404, detail="Comment not found")
@@ -830,30 +1131,42 @@ def delete_comment(comment_id: int, current_user: User = Depends(get_auth_user),
 
 
 @app.post("/api/v1/comments/{comment_id}/like")
-def like_comment(comment_id: int, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def like_comment(comment_id: str, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
     comment = db.get(Comment, comment_id)
     if comment is None:
         raise HTTPException(status_code=404, detail="Comment not found")
     post = db.get(Post, comment.post_id)
     if post is None or not PrivacyPolicy().can_view_post(current_user, post, viewer_user_id=current_user.id, author_user_id=post.author_id):
         raise HTTPException(status_code=403, detail="You cannot like this comment")
-    if db.execute(select(CommentLike.id).where(CommentLike.comment_id == comment_id, CommentLike.user_id == current_user.id)).scalar_one_or_none() is None:
+    existing = db.execute(
+        select(CommentLike).where(CommentLike.comment_id == comment_id, CommentLike.user_id == current_user.id)
+    ).scalar_one_or_none()
+    if existing is None:
         db.add(CommentLike(comment_id=comment_id, user_id=current_user.id))
-        db.commit()
-    return {"success": True, "data": {"liked": True}}
+        comment.likes_count += 1
+        liked = True
+    else:
+        db.delete(existing)
+        comment.likes_count = max(0, comment.likes_count - 1)
+        liked = False
+    db.commit()
+    return {"success": True, "data": {"liked": liked}}
 
 
 @app.delete("/api/v1/comments/{comment_id}/like")
-def unlike_comment(comment_id: int, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+def unlike_comment(comment_id: str, current_user: User = Depends(get_auth_user), db: Session = Depends(get_db)) -> dict[str, Any]:
+    comment = db.get(Comment, comment_id)
     existing = db.execute(select(CommentLike).where(CommentLike.comment_id == comment_id, CommentLike.user_id == current_user.id)).scalar_one_or_none()
     if existing is not None:
         db.delete(existing)
+        if comment is not None:
+            comment.likes_count = max(0, comment.likes_count - 1)
         db.commit()
     return {"success": True, "data": {"liked": False}}
 
 
 @app.get("/api/v1/comments/{comment_id}/likes")
-def get_comment_likes(comment_id: int, db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
+def get_comment_likes(comment_id: str, db: Session = Depends(get_db), current_user: User | None = Depends(get_optional_user)) -> dict[str, Any]:
     comment = db.get(Comment, comment_id)
     if comment is None:
         raise HTTPException(status_code=404, detail="Comment not found")

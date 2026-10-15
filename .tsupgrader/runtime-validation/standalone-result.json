@@ -1,0 +1,145 @@
+{
+  "planHash": "faf552bb9f36f074f5df1d3eced5fe7734654b5fa8e82479d1a818393c2ad338",
+  "phase": "standalone",
+  "recordedAtUtc": "2026-10-15T14:11:38.9022627Z",
+  "retryCount": 0,
+  "resetBaseline": false,
+  "complete": true,
+  "result": {
+    "setupSucceeded": true,
+    "setupDurationMs": 15577,
+    "setupFailureOutput": null,
+    "assertions": [
+      {
+        "name": "production-build",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E blog-pltform@0.0.0 build\r\n\u003E tsc -b \u0026\u0026 vite build\r\n\r\n\u001B[36mvite v8.2.1 \u001B[32mbuilding client environment for production...\u001B[36m\u001B[39m\r\n\u001B[2K\r\ntransforming...\u2713 18 modules transformed.\r\nrendering chunks...\r\ncomputing gzip size...\r\ndist/index.html                   0.56 kB \u2502 gzip:  0.35 kB\r\ndist/assets/index-CYPu8ISw.css   23.94 kB \u2502 gzip:  5.69 kB\r\ndist/assets/index-De4cvjvD.js   246.60 kB \u2502 gzip: 76.77 kB\r\n\r\n\u001B[32m\u2713 built in 312ms\u001B[39m\r\n",
+        "durationMs": 6472
+      },
+      {
+        "name": "frontend-lint",
+        "kind": "process",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\n\u003E blog-pltform@0.0.0 lint\r\n\u003E oxlint\r\n\r\n",
+        "durationMs": 1085
+      },
+      {
+        "name": "tests-pass",
+        "kind": "process",
+        "verificationMethod": "test-results",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": ".................                                                        [100%]\r\n============================== warnings summary ===============================\r\n..\\..\\.venv\\Lib\\site-packages\\fastapi\\testclient.py:1\r\n  g:\\blog pltform\\.venv\\Lib\\site-packages\\fastapi\\testclient.py:1: StarletteDeprecationWarning: Using \u0060httpx\u0060 with \u0060starlette.testclient\u0060 is deprecated; install \u0060httpx2\u0060 instead.\r\n    from starlette.testclient import TestClient as TestClient  # noqa\r\n\r\n..\\..\\backend\\app\\main.py:149\r\n  g:\\blog pltform\\backend\\app\\main.py:149: DeprecationWarning: \r\n          on_event is deprecated, use lifespan event handlers instead.\r\n  \r\n          Read more about it in the\r\n          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).\r\n          \r\n    @app.on_event(\u0022startup\u0022)\r\n\r\n..\\..\\.venv\\Lib\\site-packages\\fastapi\\applications.py:4744\r\n  g:\\blog pltform\\.venv\\Lib\\site-packages\\fastapi\\applications.py:4744: DeprecationWarning: \r\n          on_event is deprecated, use lifespan event handlers instead.\r\n  \r\n          Read more about it in the\r\n          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).\r\n          \r\n    return self.router.on_event(event_type)  # ty: ignore[deprecated]\r\n\r\n-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html\r\n17 passed, 3 warnings in 8.78s\r\n",
+        "durationMs": 11340,
+        "testResults": {
+          "testFramework": "unknown",
+          "runnerDetectedFrom": "none",
+          "testsTotal": 0,
+          "testsPassed": 0,
+          "testsFailed": 0,
+          "testsSkipped": 0,
+          "parseFailed": true
+        }
+      },
+      {
+        "name": "signup-screen",
+        "kind": "playwright-route",
+        "verificationMethod": "exit-code",
+        "passed": true,
+        "timedOut": false,
+        "skipped": false,
+        "skippedReason": null,
+        "exitCode": 0,
+        "outputSample": "\r\nRunning 1 test using 1 worker\r\n\r\n[1/1] playwright-scripts\\signup-screen.spec.ts:5:1 \u203A signup-screen\r\n  1 passed (4.5s)\r\n",
+        "durationMs": 5883
+      }
+    ],
+    "executions": [
+      {
+        "source": "setup[0]",
+        "resolvedExecutable": "G:\\New folder\\npm.CMD",
+        "args": [
+          "ci"
+        ],
+        "cwd": "g:\\blog pltform",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "devServer",
+        "resolvedExecutable": "G:\\New folder\\npm.CMD",
+        "args": [
+          "run",
+          "dev",
+          "--",
+          "--host",
+          "127.0.0.1",
+          "--port",
+          "5173",
+          "--strictPort"
+        ],
+        "cwd": "g:\\blog pltform",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "production-build",
+        "resolvedExecutable": "G:\\New folder\\npm.CMD",
+        "args": [
+          "run",
+          "build"
+        ],
+        "cwd": "g:\\blog pltform",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "frontend-lint",
+        "resolvedExecutable": "G:\\New folder\\npm.CMD",
+        "args": [
+          "run",
+          "lint"
+        ],
+        "cwd": "g:\\blog pltform",
+        "env": {},
+        "prependPath": [],
+        "platform": "win32"
+      },
+      {
+        "source": "tests-pass",
+        "resolvedExecutable": "g:\\blog pltform\\.venv\\Scripts\\python.EXE",
+        "args": [
+          "-m",
+          "pytest",
+          "../../backend/tests",
+          "-q"
+        ],
+        "cwd": "g:\\blog pltform\\.tsupgrader\\runtime-validation",
+        "env": {
+          "PYTHONPATH": "../..;../../backend"
+        },
+        "prependPath": [
+          "g:\\blog pltform\\.venv\\Scripts"
+        ],
+        "platform": "win32"
+      }
+    ]
+  }
+}
