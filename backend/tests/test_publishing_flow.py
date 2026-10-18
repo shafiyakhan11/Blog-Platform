@@ -115,6 +115,31 @@ def test_publish_read_interact_and_persist(client: TestClient) -> None:
     assert author_post["comments"][0]["is_liked"] is True
 
 
+def test_published_post_remains_linked_to_author_after_username_change(client: TestClient) -> None:
+    author_id, author_token = _create_user(client, name="Post Author", email="rename@example.com")
+    author_headers = {"Authorization": f"Bearer {author_token}"}
+
+    created = client.post(
+        "/api/v1/posts",
+        headers=author_headers,
+        json={"id": "renamed-author-post", "title": "A post before rename", "content": "Post content"},
+    )
+    assert created.status_code == 200, created.text
+
+    renamed = client.put(
+        "/api/profile",
+        headers=author_headers,
+        json={"username": "new_author_name"},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["username"] == "new_author_name"
+
+    feed = client.get("/api/posts", headers=author_headers)
+    assert feed.status_code == 200, feed.text
+    post = next(item for item in feed.json() if item["id"] == "renamed-author-post")
+    assert post["author_id"] == author_id
+
+
 def test_comment_cannot_be_attached_to_another_posts_thread(client: TestClient) -> None:
     _, author_token = _create_user(client, name="Thread Author", email="thread-author@example.com")
     _, reader_token = _create_user(client, name="Thread Reader", email="thread-reader@example.com")

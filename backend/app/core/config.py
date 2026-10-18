@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "DraftFlow"
     environment: str = "development"
-    database_url: str = "******localhost:5432/blog_portal"
+    database_url: str # "******localhost:5432/blog_portal"
     jwt_secret_key: str = ""
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15

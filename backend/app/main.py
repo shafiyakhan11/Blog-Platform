@@ -778,6 +778,7 @@ def legacy_posts(
         result.append(
             {
                 "id": post.id,
+                "author_id": post.author_id,
                 "title": post.title,
                 "excerpt": post.excerpt or post.content[:160],
                 "content": post.content,

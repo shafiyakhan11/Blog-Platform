@@ -5,13 +5,20 @@ DraftFlow is a React/TypeScript publishing app backed by FastAPI, SQLAlchemy, an
 ## Local development
 
 1. Install frontend dependencies with `npm install`.
-2. Install backend dependencies with `python -m pip install -r backend/requirements.txt`.
+2. Create and activate the project Python virtual environment, then install backend dependencies:
+
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   python -m pip install -r backend\requirements.txt
+   ```
+
 3. Create a PostgreSQL database and configure `backend/.env` from `backend/.env.example`.
 4. Apply the database migrations:
 
    ```powershell
    Set-Location backend
-   alembic upgrade head
+   ..\.venv\Scripts\python -m alembic upgrade head
    Set-Location ..
    ```
 
@@ -19,7 +26,7 @@ DraftFlow is a React/TypeScript publishing app backed by FastAPI, SQLAlchemy, an
 
    ```powershell
    Set-Location backend
-   python server.py
+   ..\.venv\Scripts\python server.py
    ```
 
    ```powershell
@@ -48,7 +55,8 @@ When frontend and API share a host, configure the reverse proxy to serve the fro
 ## API
 
 - `GET /api/health`
-- `POST /api/auth` for email/password signup and login; `POST /api/auth/google` for Google sign-in
+- `POST /api/v1/auth/register` and `POST /api/v1/auth/login` for email/password signup and login; `GET /api/v1/auth/me` for the authenticated user
+- `POST /api/auth` remains available for legacy email/password clients; `POST /api/auth/google` for Google sign-in
 - `POST /api/auth/password/forgot` and `POST /api/auth/password/reset`
 - `GET /api/posts` for the feed and `/api/v1/posts/*` for authenticated post interactions
 - `GET`/`PUT /api/profile`

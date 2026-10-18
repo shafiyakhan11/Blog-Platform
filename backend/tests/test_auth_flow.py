@@ -53,7 +53,7 @@ def test_register_login_refresh_and_me():
 
     login = client.post(
         "/api/v1/auth/login",
-        json={"username": payload["username"], "password": payload["password"]},
+        json={"username": payload["email"], "password": payload["password"]},
     )
     assert login.status_code == 200, login.text
 
