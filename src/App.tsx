@@ -46,6 +46,7 @@ type CommentNode = {
 
 type Post = {
   id: string
+  authorId?: number
   title: string
   excerpt: string
   content: string
@@ -67,6 +68,7 @@ type Post = {
 
 type ApiPost = {
   id: number | string
+  author_id?: number | null
   title: string
   excerpt?: string | null
   content: string
@@ -98,6 +100,7 @@ type ApiComment = {
 }
 
 const initialUser = {
+  id: null as number | null,
   name: 'Your Name',
   username: '@yourname',
   email: 'you@example.com',
@@ -126,6 +129,7 @@ const mapApiPost = (post: ApiPost): Post => {
 
   return {
     id: String(post.id),
+    authorId: post.author_id ?? undefined,
     title: post.title,
     excerpt: post.excerpt ?? post.content.slice(0, 160),
     content: post.content,
@@ -905,6 +909,7 @@ function App() {
       const result = await legacyApiRequest<{
         access_token: string
         user: {
+          id: number
           name: string
           username: string
           email: string
@@ -919,6 +924,7 @@ function App() {
       setAuthToken(result.access_token, rememberMe)
       setCurrentUser((current) => ({
         ...current,
+        id: result.user.id,
         name: result.user.name,
         username: result.user.username.startsWith('@') ? result.user.username : `@${result.user.username}`,
         email: result.user.email,
@@ -940,6 +946,7 @@ function App() {
     if (!token) return
     let cancelled = false
     void apiRequest<{
+      id: number
       name: string
       username: string
       email: string
@@ -951,6 +958,7 @@ function App() {
         if (cancelled) return
         setCurrentUser((current) => ({
           ...current,
+          id: user.id,
           name: user.name,
           username: user.username.startsWith('@') ? user.username : `@${user.username}`,
           email: user.email,
@@ -1129,8 +1137,8 @@ function App() {
     posts.find((post) => post.id === activePostId) ?? filteredPosts[0] ?? posts[0] ?? initialPosts[0]
 
   const trendingPosts = [...posts].sort((a, b) => b.trendingScore - a.trendingScore).slice(0, 4)
-  const myPosts = posts.filter((post) => post.authorHandle === currentUser.username)
-  const isOwnPost = activePost.authorHandle === currentUser.username
+  const myPosts = posts.filter((post) => post.authorId === currentUser.id)
+  const isOwnPost = activePost.authorId !== undefined && activePost.authorId === currentUser.id
 
   const selectPost = (postId: string) => {
     setActivePostId(postId)
@@ -1198,6 +1206,7 @@ function App() {
         const newPost: Post = {
           ...postFields,
           id,
+          authorId: currentUser.id ?? undefined,
           author: currentUser.name,
           authorHandle: currentUser.username,
           avatar: getUserInitials(currentUser.name),
@@ -1233,7 +1242,8 @@ function App() {
     setProfileSaving(true)
     setProfileSaveError('')
     try {
-      const savedProfile = await apiRequest<{
+      const savedProfile = await legacyApiRequest<{
+        id: number
         name: string
         username: string
         email: string
@@ -1246,6 +1256,7 @@ function App() {
       })
       const updatedUser = {
         ...profileDraft,
+        id: savedProfile.id,
         name: savedProfile.name,
         username: savedProfile.username.startsWith('@') ? savedProfile.username : `@${savedProfile.username}`,
         email: savedProfile.email,
@@ -1579,34 +1590,45 @@ function App() {
     setAuthSubmitting(true)
     setAuthError('')
     try {
-      const result = await legacyApiRequest<{
-        access_token: string
-        user: {
+      const email = authForm.email.trim()
+      const usernameBase = email.split('@')[0].toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 31) || 'writer'
+      const path = mode === 'signup' ? '/auth/register' : '/auth/login'
+      const payload = mode === 'signup'
+        ? {
+            name: authForm.name.trim(),
+            username: `${usernameBase}_${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`,
+            email,
+            password: authForm.password,
+          }
+        : { username: email, password: authForm.password }
+      const result = await apiRequest<{ access_token: string }>(path, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      setAuthToken(result.access_token, rememberMe)
+      let user: {
+        id: number
+        name: string
+        username: string
+        email: string
+      }
+      try {
+        user = await apiRequest<{
+          id: number
           name: string
           username: string
           email: string
-          bio: string
-          followers: number
-          following: number
-        }
-      }>('/auth', {
-        method: 'POST',
-        body: JSON.stringify({
-          mode,
-          name: authForm.name.trim(),
-          email: authForm.email.trim(),
-          password: authForm.password,
-        }),
-      })
-      setAuthToken(result.access_token, rememberMe)
+        }>('/auth/me')
+      } catch (error) {
+        setAuthToken(null)
+        throw error
+      }
       setCurrentUser((current) => ({
         ...current,
-        name: result.user.name,
-        username: result.user.username.startsWith('@') ? result.user.username : `@${result.user.username}`,
-        email: result.user.email,
-        bio: result.user.bio,
-        followers: Number(result.user.followers),
-        following: Number(result.user.following),
+        id: user.id,
+        name: user.name,
+        username: user.username.startsWith('@') ? user.username : `@${user.username}`,
+        email: user.email,
       }))
       setAuthMode(null)
     } catch (error) {
