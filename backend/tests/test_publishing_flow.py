@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,7 +30,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     existing_overrides = app.dependency_overrides.copy()
     app.dependency_overrides[get_db] = override_get_db
     monkeypatch.setattr(settings, "jwt_secret_key", "test-secret-that-is-long-enough-for-hmac")
-    yield TestClient(app)
+    yield TestClient(app, client=(f"publishing-test-{uuid4()}", 54321))
     app.dependency_overrides.clear()
     app.dependency_overrides.update(existing_overrides)
     engine.dispose()

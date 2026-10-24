@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
+from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.database import get_db
 from app.schemas import LoginRequest, RegisterRequest, TokenPair, TokenRefreshRequest, UserOut
 from app.services.auth_service import AuthService
@@ -16,22 +18,27 @@ security = HTTPBearer()
 
 
 @router.post("/register", response_model=TokenPair, status_code=status.HTTP_201_CREATED)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> TokenPair:
+@limiter.limit(settings.rate_limit_auth)
+def register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)) -> TokenPair:
     return AuthService(db).register(payload)
 
 
 @router.post("/login", response_model=TokenPair)
-def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenPair:
+@limiter.limit(settings.rate_limit_auth)
+def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)) -> TokenPair:
     return AuthService(db).login(payload)
 
 
 @router.post("/refresh", response_model=TokenPair)
-def refresh(payload: TokenRefreshRequest, db: Session = Depends(get_db)) -> TokenPair:
+@limiter.limit(settings.rate_limit_auth)
+def refresh(request: Request, payload: TokenRefreshRequest, db: Session = Depends(get_db)) -> TokenPair:
     return AuthService(db).refresh(payload.refresh_token)
 
 
 @router.post("/logout")
+@limiter.limit(settings.rate_limit_auth)
 def logout(
+    request: Request,
     payload: TokenRefreshRequest | None = None,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db),

@@ -14,15 +14,19 @@ import jwt
 from google.auth.exceptions import TransportError
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, Field
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import func, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.core.security import create_access_token, decode_token
 from app.core.security import hash_password as hash_secure_password
 from app.core.security import verify_password as verify_secure_password
@@ -35,6 +39,9 @@ from .models import Comment, CommentLike, Follow, FollowRequest, PasswordResetTo
 from .services.authorization import PrivacyPolicy
 
 app = FastAPI(title=APP_NAME)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allow_origins,
@@ -158,7 +165,8 @@ def health() -> dict[str, str]:
 
 
 @app.post("/api/auth")
-def authenticate(payload: AuthRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+@limiter.limit(settings.rate_limit_auth)
+def authenticate(request: Request, payload: AuthRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     email_value = str(payload.email).strip().lower()
     user_columns = {column["name"] for column in inspect(db.get_bind()).get_columns("users")}
     selected_columns = ["id", "name", "username", "email", "password_hash"]
@@ -233,7 +241,8 @@ def authenticate(payload: AuthRequest, db: Session = Depends(get_db)) -> dict[st
 
 
 @app.post("/api/auth/google")
-def authenticate_google(payload: GoogleAuthRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+@limiter.limit(settings.rate_limit_auth)
+def authenticate_google(request: Request, payload: GoogleAuthRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     client_id = settings.google_client_id
     if not client_id:
         raise HTTPException(status_code=503, detail="Google sign-in is not configured")
@@ -309,7 +318,8 @@ def authenticate_google(payload: GoogleAuthRequest, db: Session = Depends(get_db
 
 
 @app.post("/api/auth/password/forgot")
-def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(get_db)) -> dict[str, str]:
+@limiter.limit(settings.rate_limit_auth)
+def request_password_reset(request: Request, payload: PasswordResetRequest, db: Session = Depends(get_db)) -> dict[str, str]:
     if not settings.smtp_host or not settings.smtp_from_email or not settings.frontend_url:
         raise HTTPException(status_code=503, detail="Password reset email is not configured")
     email = str(payload.email).strip().lower()
@@ -342,7 +352,8 @@ def request_password_reset(payload: PasswordResetRequest, db: Session = Depends(
 
 
 @app.post("/api/auth/password/reset")
-def complete_password_reset(payload: PasswordResetCompletion, db: Session = Depends(get_db)) -> dict[str, str]:
+@limiter.limit(settings.rate_limit_auth)
+def complete_password_reset(request: Request, payload: PasswordResetCompletion, db: Session = Depends(get_db)) -> dict[str, str]:
     token_hash = hashlib.sha256(payload.token.encode("utf-8")).hexdigest()
     reset_token = db.execute(
         select(PasswordResetToken).where(PasswordResetToken.token_hash == token_hash)

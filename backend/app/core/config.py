@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
+    rate_limit_default: str = "5/minute"
+    rate_limit_auth: str = "5/minute"
+    rate_limit_storage_uri: str = "memory://"
     google_client_id: str | None = None
     smtp_host: str | None = None
     smtp_port: int = 587
@@ -22,7 +25,7 @@ class Settings(BaseSettings):
     smtp_password: str | None = None
     smtp_from_email: str | None = None
     frontend_url: str | None = None
-    cors_origins: str = "http://localhost:5173,http://localhost:3000,https://draftflow.netlify.app/"
+    cors_origins: str = "http://localhost:5173,http://localhost:3000,https://draftflow.netlify.app"
 
     model_config = SettingsConfigDict(
         env_file=Path(__file__).resolve().parents[2] / ".env",

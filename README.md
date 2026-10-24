@@ -46,6 +46,7 @@ Use [backend/.env.production.example](./backend/.env.production.example) as a ch
 - `FRONTEND_URL` as the canonical HTTPS frontend origin
 - `SMTP_HOST`, `SMTP_PORT`, and `SMTP_FROM_EMAIL` for password-reset email; supply SMTP credentials when required by the provider
 - `GOOGLE_CLIENT_ID` and the production frontend origin in the Google OAuth authorized JavaScript origins, if Google sign-in is enabled
+- `RATE_LIMIT_STORAGE_URI` defaults to in-memory storage; configure a shared Redis URI when running multiple API workers or instances
 - `VITE_API_URL` at frontend build time only when the API uses a separate origin
 
 Back up the database before upgrading. Run `alembic upgrade head` from `backend` as a release step before deploying the new API. These migrations add compatibility columns and tables and do not replace the existing users, posts, or comments. They are intentionally forward-only because dropping migrated data is not a safe rollback. Check `GET /api/health` after deployment and restore from the pre-migration backup if the release must be rolled back.
@@ -60,5 +61,7 @@ When frontend and API share a host, configure the reverse proxy to serve the fro
 - `POST /api/auth/password/forgot` and `POST /api/auth/password/reset`
 - `GET /api/posts` for the feed and `/api/v1/posts/*` for authenticated post interactions
 - `GET`/`PUT /api/profile`
+
+API endpoints are limited to 5 requests per minute per client IP. Authentication, token, Google sign-in, and password endpoints are also limited to 5 per minute. Exceeding a limit returns HTTP 429. The default in-memory store is per process; configure `RATE_LIMIT_STORAGE_URI` with a shared Redis instance for multiple workers or instances. When deployed behind a reverse proxy, configure trusted proxy handling so the API sees the actual client IP.
 
 Schema changes are managed with Alembic. The API does not create or seed production tables automatically.
